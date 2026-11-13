@@ -42,6 +42,7 @@ create table if not exists publication (
   records jsonb not null,                  -- the records it was rendered from: a rollback restores them
   created_at timestamptz not null default now(), active_at timestamptz);
 create table if not exists opa_status (instance_id text primary key, bundles jsonb not null, at timestamptz not null);
+alter table opa_status add column if not exists pod text;
 create table if not exists audit_log (
   seq bigserial primary key, at timestamptz not null default now(),
   actor text not null, action text not null, object text not null, before jsonb, after jsonb);
