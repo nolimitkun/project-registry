@@ -26,6 +26,8 @@ Projects, their agents and exceptions live in Postgres instead of `projects/*.ya
 
 Rollback activates an earlier revision and restores the records it was rendered from. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
 
+A daily job (`python -m registry.gitexport`) writes the records back to the deployment repo through that repo's `scripts/registry-export.py` and opens one pull request (branch `registry-export`), or updates the open one; it needs a fine-grained GitHub token for that repo, read from the environment through a git credential helper so it never appears in a command line.
+
 `/metrics` exports `project_budget_usd{project}` for the platform's one budget alert rule. `/export` returns every record in the deployment repo's file format; its `scripts/registry-export.py` writes them back to Git.
 
 **Portal.** The registry serves a page at `/portal/` (one HTML file, `registry/static/portal.html`, same origin as the API) with these views:
