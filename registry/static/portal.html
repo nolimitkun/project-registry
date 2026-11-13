@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project registry</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e1dc;
+    --accent: #2f5d8a; --ok: #2e7d4f; --warn: #a3620a; --bad: #b3261e; --chip: #eeede8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --panel: #1f1f1d; --text: #ecebe6; --muted: #9b9a93; --line: #34332f;
+            --accent: #8db4d9; --ok: #7cc49a; --warn: #e0a64a; --bad: #f08a80; --chip: #2a2a27; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  nav button { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
+  nav button.active { background: var(--chip); color: var(--text); }
+  .spacer { flex: 1; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
+  section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; overflow-x: auto; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  tr.clickable { cursor: pointer; } tr.clickable:hover { background: var(--chip); }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--chip); font-size: 12px; margin: 1px 2px 1px 0; }
+  .state-active { color: var(--ok); } .state-pending_approval, .state-approved, .state-publishing { color: var(--warn); }
+  .state-failed, .state-rejected { color: var(--bad); } .state-withdrawn, .state-rolled_back, .state-superseded { color: var(--muted); }
+  pre { background: var(--chip); padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; margin: 6px 0; }
+  textarea { width: 100%; min-height: 160px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  input[type=text] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  button.action { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; margin-right: 6px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+  button.danger { color: var(--bad); }
+  .muted { color: var(--muted); } .error { color: var(--bad); white-space: pre-wrap; } .success { color: var(--ok); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .login { text-align: center; padding: 60px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Project registry</h1>
+  <nav id="nav" hidden>
+    <button data-view="projects">Projects</button>
+    <button data-view="changes">Changes</button>
+    <button data-view="publications">Publications</button>
+  </nav>
+  <span class="spacer"></span>
+  <span id="who" class="muted"></span>
+  <button id="logout" class="action" hidden>Log out</button>
+</header>
+<main id="main"></main>
+
+<script>
+"use strict";
+// --- helpers: every value from the API goes in as text, never as HTML ---
+const $main = document.getElementById("main");
+function el(tag, attrs, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of children.flat()) if (c !== null && c !== undefined) e.append(c instanceof Node ? c : String(c));
+  return e;
+}
+const json = (v) => JSON.stringify(v, null, 2);
+const when = (t) => t ? new Date(t).toLocaleString() : "";
+
+// --- login: authorization code with PKCE against the realm, tokens in sessionStorage ---
+let config = null;
+const store = sessionStorage;
+function b64url(bytes) { return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+async function pkce() {
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  return { verifier, challenge };
+}
+const redirectUri = () => location.origin + "/portal/";
+async function login() {
+  const { verifier, challenge } = await pkce();
+  const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
+  store.setItem("pkce", JSON.stringify({ verifier, state }));
+  const q = new URLSearchParams({ client_id: config.clientId, response_type: "code", scope: "openid",
+    redirect_uri: redirectUri(), code_challenge: challenge, code_challenge_method: "S256", state });
+  location.assign(`${config.issuer}/protocol/openid-connect/auth?${q}`);
+}
+async function tokenRequest(params) {
+  const r = await fetch(`${config.issuer}/protocol/openid-connect/token`, { method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: config.clientId, ...params }) });
+  if (!r.ok) throw new Error("token request failed: " + r.status);
+  const t = await r.json();
+  store.setItem("tokens", JSON.stringify({ access: t.access_token, refresh: t.refresh_token, id: t.id_token }));
+}
+async function finishLogin() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has("code")) return;
+  const saved = JSON.parse(store.getItem("pkce") || "{}");
+  history.replaceState(null, "", "/portal/");
+  if (q.get("state") !== saved.state) throw new Error("login state does not match");
+  store.removeItem("pkce");
+  await tokenRequest({ grant_type: "authorization_code", code: q.get("code"), redirect_uri: redirectUri(), code_verifier: saved.verifier });
+}
+function tokens() { return JSON.parse(store.getItem("tokens") || "null"); }
+function logout() {
+  const t = tokens();
+  store.removeItem("tokens");
+  const q = new URLSearchParams({ client_id: config.clientId, post_logout_redirect_uri: redirectUri() });
+  if (t && t.id) q.set("id_token_hint", t.id);
+  location.assign(`${config.issuer}/protocol/openid-connect/logout?${q}`);
+}
+
+// --- API: refresh once on 401 ---
+async function api(method, path, body) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const t = tokens();
+    const r = await fetch(path, { method, headers: { "Authorization": `Bearer ${t ? t.access : ""}`,
+      ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    if (r.status === 401 && attempt === 0 && t && t.refresh) {
+      try { await tokenRequest({ grant_type: "refresh_token", refresh_token: t.refresh }); continue; }
+      catch { store.removeItem("tokens"); return login(); }
+    }
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { const err = new Error(describe(data.detail) || `${r.status}`); err.status = r.status; throw err; }
+    return data;
+  }
+}
+function describe(detail) {
+  if (!detail) return "";
+  if (typeof detail === "string") return detail;
+  if (detail.errors) return detail.errors.join("\n");
+  return json(detail);
+}
+
+// --- views ---
+let me = null;
+const views = { projects: viewProjects, changes: viewChanges, publications: viewPublications };
+function show(view, arg) {
+  for (const b of document.querySelectorAll("nav button")) b.classList.toggle("active", b.dataset.view === view);
+  $main.replaceChildren(el("p", { class: "muted" }, "Loading…"));
+  views[view](arg).catch((e) => $main.replaceChildren(el("p", { class: "error" }, e.message)));
+}
+
+async function viewProjects() {
+  const projects = await api("GET", "/projects");
+  const rows = Object.entries(projects).map(([id, p]) => el("tr", { class: "clickable", onclick: () => viewProject(id) },
+    el("td", {}, el("strong", {}, id)), el("td", {}, p.data_class), el("td", {}, (p.placement || []).map((x) => el("span", { class: "chip" }, x))),
+    el("td", {}, p.limits && p.limits.requests_per_minute ? `${p.limits.requests_per_minute}/min` : "—"),
+    el("td", {}, p.budget ? `$${p.budget.usd_per_30_days}` : "—"), el("td", { class: "muted" }, p.description || "")));
+  $main.replaceChildren(
+    el("section", { class: "panel" }, el("h2", {}, "Projects"),
+      el("table", {}, el("thead", {}, el("tr", {}, ["Project", "Data class", "Placement", "Requests", "Budget / 30 days", "Description"].map((h) => el("th", {}, h)))), el("tbody", {}, rows))),
+    newProjectPanel());
+}
+
+async function viewProject(id) {
+  show_nav("projects");
+  const [record, changes] = await Promise.all([api("GET", `/projects/${encodeURIComponent(id)}`),
+                                               api("GET", `/changes?object_id=${encodeURIComponent(id)}&limit=20`)]);
+  const patch = el("textarea", {}, json({ limits: record.spec.limits || {}, budget: record.spec.budget || null }));
+  const msg = el("p");
+  const submit = async () => {
+    msg.className = ""; msg.textContent = "Submitting…";
+    try {
+      const ch = await api("PATCH", `/projects/${encodeURIComponent(id)}`, { spec: JSON.parse(patch.value) });
+      msg.className = "success"; msg.textContent = `Change ${ch.id} submitted; it needs: ${ch.required_approvals.join(", ")}.`;
+    } catch (e) { msg.className = "error"; msg.textContent = e.message; }
+  };
+  $main.replaceChildren(
+    el("section", { class: "panel" }, el("h2", {}, `Project ${id}`), el("p", { class: "muted" }, `Record revision ${record.revision}`), el("pre", {}, json(record.spec))),
+    el("section", { class: "panel" }, el("h2", {}, "Propose a change"),
+      el("p", { class: "muted" }, "A JSON merge patch over the record: set a field to change it, null to remove it. Nothing changes until it is approved and published."),
+      patch, el("div", { class: "row" }, el("button", { class: "action primary", onclick: submit }, "Submit change")), msg),
+    el("section", { class: "panel" }, el("h2", {}, "Changes to this project"), changesTable(changes)));
+}
+
+function newProjectPanel() {
+  const id = el("input", { type: "text", placeholder: "project id" });
+  const owner = el("input", { type: "text", placeholder: "owner group (Keycloak)" });
+  const spec = el("textarea", {}, json({ project: "", owner: "", description: "", data_class: "internal", keys: [] }));
+  const msg = el("p");
+  const submit = async () => {
+    try {
+      const body = JSON.parse(spec.value); body.project = id.value;
+      const ch = await api("POST", `/projects/${encodeURIComponent(id.value)}`, { spec: body, owner_group: owner.value });
+      msg.className = "success"; msg.textContent = `Change ${ch.id} submitted; it needs: ${ch.required_approvals.join(", ")}.`;
+    } catch (e) { msg.className = "error"; msg.textContent = e.message; }
+  };
+  return el("section", { class: "panel" }, el("h2", {}, "Request a new project"),
+    el("div", { class: "row" }, id, owner), spec, el("div", { class: "row" }, el("button", { class: "action", onclick: submit }, "Request project")), msg);
+}
+
+function changesTable(changes) {
+  if (!changes.length) return el("p", { class: "muted" }, "None.");
+  return el("table", {}, el("thead", {}, el("tr", {}, ["#", "Object", "Change", "State", "Needs", "Approved", "By", "When"].map((h) => el("th", {}, h)))),
+    el("tbody", {}, changes.map((c) => el("tr", { class: "clickable", onclick: () => viewChange(c.id) },
+      el("td", {}, c.id), el("td", {}, `${c.kind} ${c.object_id}`), el("td", {}, c.op),
+      el("td", { class: `state-${c.state}` }, c.state), el("td", {}, c.required_approvals.map((r) => el("span", { class: "chip" }, r))),
+      el("td", {}, c.approvals.map((a) => el("span", { class: "chip" }, `${a.role}: ${a.approver}${a.decision === "reject" ? " ✗" : ""}`))),
+      el("td", {}, c.created_by), el("td", { class: "muted" }, when(c.created_at))))));
+}
+
+async function viewChanges() {
+  const filter = el("select", { onchange: () => load() }, el("option", { value: "open" }, "Open"), el("option", { value: "" }, "All"));
+  const holder = el("div");
+  const load = async () => holder.replaceChildren(changesTable(await api("GET", `/changes?limit=100${filter.value ? "&state=" + filter.value : ""}`)));
+  $main.replaceChildren(el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Changes"), el("span", { class: "spacer" }), filter), holder));
+  await load();
+}
+
+function changedKeys(before, after) {
+  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+  return [...keys].filter((k) => json((before || {})[k]) !== json((after || {})[k]));
+}
+
+async function viewChange(cid) {
+  show_nav("changes");
+  const c = await api("GET", `/changes/${cid}`);
+  const comment = el("input", { type: "text", placeholder: "comment (optional)", size: 40 });
+  const msg = el("p");
+  const act = (what) => async () => {
+    try { await api("POST", `/changes/${cid}/${what}`, { comment: comment.value || null }); await viewChange(cid); }
+    catch (e) { msg.className = "error"; msg.textContent = e.message; }
+  };
+  const done = new Set(c.approvals.filter((a) => a.decision === "approve").map((a) => a.role));
+  const open = c.required_approvals.filter((r) => !done.has(r));
+  const diff = changedKeys(c.before, c.after).map((k) => el("tr", {}, el("td", {}, el("strong", {}, k)),
+    el("td", {}, el("pre", {}, json((c.before || {})[k] ?? null))), el("td", {}, el("pre", {}, json((c.after || {})[k] ?? null)))));
+  const pending = ["pending_approval", "approved"].includes(c.state);
+  $main.replaceChildren(
+    el("section", { class: "panel" }, el("h2", {}, `Change ${c.id}: ${c.op} ${c.kind} ${c.object_id}`),
+      el("p", {}, "State: ", el("strong", { class: `state-${c.state}` }, c.state), c.bundle_revision ? ` · bundle ${c.bundle_revision}` : "",
+        ` · by ${c.created_by} · ${when(c.created_at)}`),
+      c.error ? el("p", { class: "error" }, c.error) : null,
+      el("p", {}, "Needs: ", c.required_approvals.map((r) => el("span", { class: "chip" }, r + (done.has(r) ? " ✓" : "")))),
+      c.approvals.length ? el("ul", {}, c.approvals.map((a) => el("li", {}, `${a.decision} as ${a.role} by ${a.approver}, ${when(a.at)}${a.comment ? ": " + a.comment : ""}`))) : null,
+      pending ? el("div", { class: "row" }, comment,
+        c.state === "pending_approval" ? el("button", { class: "action primary", onclick: act("approve") }, "Approve") : null,
+        c.state === "pending_approval" ? el("button", { class: "action danger", onclick: act("reject") }, "Reject") : null,
+        el("button", { class: "action", onclick: act("withdraw") }, "Withdraw")) : null,
+      pending && open.length ? el("p", { class: "muted" }, `Open: ${open.join(", ")}. The registry decides if one of them is yours; nobody approves their own change.`) : null,
+      msg),
+    el("section", { class: "panel" }, el("h2", {}, "What changes"),
+      diff.length ? el("table", {}, el("thead", {}, el("tr", {}, ["Field", "Before", "After"].map((h) => el("th", {}, h)))), el("tbody", {}, diff)) : el("p", { class: "muted" }, "Nothing (whole record created or removed)."),
+      el("details", {}, el("summary", {}, "Whole records"), el("div", { class: "grid2" }, el("pre", {}, json(c.before)), el("pre", {}, json(c.after))))),
+    c.replay_report ? el("section", { class: "panel" }, el("h2", {}, "Replay before publishing"),
+      el("p", {}, `${c.replay_report.replayed} decisions replayed; changed for this change's projects: ${c.replay_report.changed_for_changed_projects}; for other projects: ${c.replay_report.changed_for_other_projects}.`)) : null);
+}
+
+async function viewPublications() {
+  const pubs = await api("GET", "/publications");
+  const isPlatform = me.groups.includes("platform-admins");
+  const msg = el("p");
+  const rollback = (rev) => async (ev) => {
+    ev.stopPropagation();
+    if (!confirm(`Activate ${rev} again and restore the records it was published from?`)) return;
+    try { await api("POST", `/rollback/${encodeURIComponent(rev)}`); await viewPublications(); }
+    catch (e) { msg.className = "error"; msg.textContent = e.message; }
+  };
+  $main.replaceChildren(el("section", { class: "panel" }, el("h2", {}, "Published bundles (gateway-projects)"),
+    el("table", {}, el("thead", {}, el("tr", {}, ["Revision", "State", "Changes", "Policy commit", "Published", "Active everywhere", ""].map((h) => el("th", {}, h)))),
+      el("tbody", {}, pubs.map((p) => el("tr", {}, el("td", {}, p.revision), el("td", { class: `state-${p.state}` }, p.state),
+        el("td", {}, p.change_ids.length ? p.change_ids.join(", ") : el("span", { class: "muted" }, "import / re-sign")),
+        el("td", { class: "muted" }, (p.policy_revision || "").slice(0, 10)), el("td", { class: "muted" }, when(p.created_at)), el("td", { class: "muted" }, when(p.active_at)),
+        el("td", {}, isPlatform && p.state !== "active" ? el("button", { class: "action danger", onclick: rollback(p.revision) }, "Roll back to this") : null))))),
+    msg));
+}
+function show_nav(view) { for (const b of document.querySelectorAll("nav button")) b.classList.toggle("active", b.dataset.view === view); }
+
+// --- start ---
+(async () => {
+  try {
+    config = await (await fetch("/portal/config.json")).json();
+    await finishLogin();
+    if (!tokens()) {
+      $main.replaceChildren(el("div", { class: "login" }, el("p", {}, "Projects, agents and exceptions of the AI gateway, changed by request and approval."),
+        el("button", { class: "action primary", onclick: login }, "Log in with Keycloak")));
+      return;
+    }
+    me = await api("GET", "/me");
+    document.getElementById("who").textContent = `${me.name} · ${me.groups.join(", ")}`;
+    document.getElementById("nav").hidden = false;
+    const out = document.getElementById("logout"); out.hidden = false; out.onclick = logout;
+    for (const b of document.querySelectorAll("nav button")) b.onclick = () => show(b.dataset.view);
+    show("projects");
+  } catch (e) { $main.replaceChildren(el("p", { class: "error" }, e.message)); }
+})();
+</script>
+</body>
+</html>
