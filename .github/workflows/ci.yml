@@ -1,0 +1,57 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: registry
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: opa
+        run: |
+          mkdir -p .bin
+          curl -fsSL -o .bin/opa https://github.com/open-policy-agent/opa/releases/download/v1.22.2/opa_linux_amd64_static
+          chmod +x .bin/opa
+          echo "$PWD/.bin" >> "$GITHUB_PATH"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/registry
+
+  image:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          push: true
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          tags: |
+            ghcr.io/${{ github.repository }}:main
+            ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
