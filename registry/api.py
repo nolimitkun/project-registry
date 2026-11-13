@@ -1,7 +1,8 @@
-"""The registry API. Every edit is a change request: validated by rendering the
-whole bundle with it, its approvals decided by policy (OPA:
-data.portal.required_approvals, Rego in the deployment repo), approved by other
-people than its author, then published by the publisher.
+"""The registry API and its portal page. Every edit is a change request, proposed
+only by whom policy allows (OPA: data.portal.may_submit), validated by rendering
+the whole bundle with it, its approvals decided by policy
+(data.portal.required_approvals; both Rego in the deployment repo), approved by
+other people than its author (or withdrawn), then published by the publisher.
 
     uvicorn registry.api:app
 """

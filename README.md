@@ -22,7 +22,7 @@ Projects, their agents and exceptions live in Postgres instead of `projects/*.ya
    4. builds the bundle, signs it with Vault Transit, uploads it and activates it.
 
    All of this runs in one database transaction.
-4. **Activation.** A change is `active` once every OPA reports its bundle revision (OPA's status plugin posts to `/opa/status`).
+4. **Activation.** A change is `active` once every ready OPA pod has reported its bundle revision. OPA's status plugin posts to `/opa/status`, with the pod name as a label. The ready pods come from the OPA Service's EndpointSlices, and the check also runs on every round of the publisher (`registry/activation.py`).
 
 Rollback activates an earlier revision and restores the records it was rendered from. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
 
