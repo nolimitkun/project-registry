@@ -4,7 +4,7 @@ signed gateway-projects bundle (migration steps 2 to 4 of the design).
     python -m registry.importer --owner-group platform-admins
 
 Reads the deployment repo at the active policy revision, imports its records
-(once: refuses if the registry has any), renders them with gen-projects.py and
+(once: does nothing if the registry has any, so it can run on every sync), renders them with gen-projects.py and
 compares the result with the commit's policies/gateway-projects byte for byte
 (the shadow check). Only if they match does it publish and activate.
 """
@@ -43,7 +43,8 @@ def run(db: dbm.DB, store, signer, renderer, owner_group: str, data_bundle="gate
     records = import_git(checkout)
     with db.tx() as c, tempfile.TemporaryDirectory() as tmp:
         if c.execute("select 1 from resource limit 1").fetchone():
-            raise SystemExit("the registry already has records; import runs once")
+            print("the registry already has records: nothing to import")
+            return store.active(data_bundle)
         for kind, items in records.items():
             for oid, spec in items.items():
                 c.execute("insert into resource (kind, id, spec) values (%s, %s, %s)", (kind, oid, Jsonb(spec)))
