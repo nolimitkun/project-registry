@@ -86,8 +86,10 @@ def run(db: dbm.DB, slug: str, token: str, base: str = "main", branch: str = "re
         work = Path(tmp) / "repo"
         git("clone", "--quiet", "--depth", "1", "--branch", base, remote, str(work), cwd=Path(tmp))
         (Path(tmp) / "export.json").write_text(json.dumps(export))
-        subprocess.run([sys.executable, "scripts/registry-export.py", "--from-file", str(Path(tmp) / "export.json")],
-                       cwd=work, check=True, capture_output=True, text=True)
+        r = subprocess.run([sys.executable, "scripts/registry-export.py", "--from-file", str(Path(tmp) / "export.json")],
+                           cwd=work, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"scripts/registry-export.py on {base} failed: {(r.stderr or r.stdout).strip()[-800:]}")
         git("add", "-A", cwd=work)
         changed = [l for l in git("status", "--porcelain", cwd=work).splitlines() if l.strip()]
         if not changed:
