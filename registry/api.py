@@ -168,6 +168,26 @@ class Registry:
             dbm.audit(c, user.name, decision, f"change/{change_id}", None, {"role": role, "comment": comment})
             return {"id": change_id, "state": state, "approved_as": role}
 
+    def withdraw(self, user: User, change_id: int, comment: str | None) -> dict:
+        """Its author, or the platform team, takes back a change not yet published: the way out
+        of a change nobody can approve (say, its author is the only member of a role it needs)."""
+        with self.db.tx() as c:
+            ch = c.execute("select * from change_request where id = %s for update", (change_id,)).fetchone()
+            if not ch:
+                raise HTTPException(404, "no such change")
+            if user.name != ch["created_by"] and ROLE_GROUPS["platform"] not in user.groups:
+                raise HTTPException(403, "only its author or the platform team may withdraw a change")
+            if ch["state"] not in ("pending_approval", "approved"):
+                raise HTTPException(409, f"change is {ch['state']}")
+            published = c.execute("select 1 from outbox where change_id = %s and published_at is not null",
+                                  (change_id,)).fetchone()
+            if published:
+                raise HTTPException(409, "change is being published")
+            c.execute("delete from outbox where change_id = %s", (change_id,))
+            c.execute("update change_request set state = 'withdrawn', updated_at = now() where id = %s", (change_id,))
+            dbm.audit(c, user.name, "withdraw", f"change/{change_id}", None, {"comment": comment})
+            return {"id": change_id, "state": "withdrawn"}
+
     # --- activation, from OPA status reports ---
     def status(self, report: dict) -> None:
         instance = (report.get("labels") or {}).get("id")
@@ -246,6 +266,10 @@ def create_app(reg: Registry) -> FastAPI:
     @app.post("/changes/{change_id}/reject")
     def reject(change_id: int, body: Decision, user: User = Depends(current_user)):
         return reg.decide(user, change_id, "reject", body.comment)
+
+    @app.post("/changes/{change_id}/withdraw")
+    def withdraw(change_id: int, body: Decision, user: User = Depends(current_user)):
+        return reg.withdraw(user, change_id, body.comment)
 
     @app.get("/export")
     def export(user: User = Depends(current_user)):

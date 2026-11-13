@@ -197,3 +197,24 @@ def test_a_key_change_re_signs_the_active_records(world):
     assert pub.resign_if_needed() is None
     with db.tx() as c:
         assert c.execute("select action from audit_log order by seq desc limit 1").fetchone()["action"] == "resign"
+
+
+def test_a_change_nobody_can_approve_can_be_withdrawn(world):
+    db, reg, pub = world["db"], world["reg"], world["pub"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
+    with pytest.raises(HTTPException) as e:
+        reg.withdraw(SEC, ch["id"], None)                       # neither author nor platform team
+    assert e.value.status_code == 403
+    assert reg.withdraw(ALICE, ch["id"], "nobody else owns it") == {"id": ch["id"], "state": "withdrawn"}
+    with pytest.raises(HTTPException) as e:
+        reg.decide(BOB, ch["id"], "approve", None)               # nothing left to approve
+    assert e.value.status_code == 409
+    # an approved one leaves the outbox too, so it is never published
+    ch2 = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 31}}))
+    reg.decide(BOB, ch2["id"], "approve", None)
+    assert reg.withdraw(BOB, ch2["id"], None)["state"] == "withdrawn"   # platform team
+    assert pub.publish_once() is None
+    with db.tx() as c:
+        assert c.execute("select spec from resource where kind='project' and id='admin'").fetchone()["spec"]["limits"] \
+            == {"requests_per_minute": 60}

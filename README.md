@@ -24,7 +24,7 @@ Projects, their agents and exceptions live in Postgres instead of `projects/*.ya
    All of this runs in one database transaction.
 4. **Activation.** A change is `active` once every OPA reports its bundle revision (OPA's status plugin posts to `/opa/status`).
 
-Rollback activates an earlier revision and restores the records it was rendered from.
+Rollback activates an earlier revision and restores the records it was rendered from. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
 
 `/metrics` exports `project_budget_usd{project}` for the platform's one budget alert rule. `/export` returns every record in the deployment repo's file format; its `scripts/registry-export.py` writes them back to Git.
 
