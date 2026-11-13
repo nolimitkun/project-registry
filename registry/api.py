@@ -14,6 +14,7 @@ from pathlib import Path
 
 import requests
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
@@ -64,6 +65,14 @@ class Registry:
             raise HTTPException(503, f"approval policy gave no valid answer: {roles!r}")   # fail closed
         return sorted(set(roles))
 
+    def may_submit(self, change: dict, user: User, owner_group: str | None) -> bool:
+        """data.portal.may_submit: who may propose this change at all (approval is separate)."""
+        r = requests.post(f"{self.opa_url}/v1/data/portal/may_submit", timeout=5, json={"input": {
+            "change": change, "requester": user.name, "groups": sorted(user.groups),
+            "owner_group": owner_group}})
+        r.raise_for_status()
+        return r.json().get("result") is True          # undefined or anything else: no
+
     def owner_group(self, c, kind: str, oid: str, spec: dict | None) -> str | None:
         pid = oid if kind in ("project", "exception") else (spec or {}).get("project")
         row = c.execute("select owner_group from project_owner where project_id = %s", (pid,)).fetchone()
@@ -111,6 +120,10 @@ class Registry:
                 except RenderError as e:
                     raise HTTPException(422, {"errors": e.errors}) from e
             change = {"kind": kind, "object_id": oid, "op": op, "before": before, "after": after}
+            owner = body.owner_group if (kind == "project" and op == "create") else \
+                self.owner_group(c, kind, oid, after or before)
+            if not self.may_submit(change, user, owner):
+                raise HTTPException(403, f"you may not propose changes to {kind} {oid}")
             required = self.required_approvals(change, user.name)
             row = c.execute("""insert into change_request (kind, object_id, op, before, after, state,
                                    required_approvals, created_by)
@@ -233,6 +246,30 @@ def create_app(reg: Registry) -> FastAPI:
     @app.post("/changes/{change_id}/reject")
     def reject(change_id: int, body: Decision, user: User = Depends(current_user)):
         return reg.decide(user, change_id, "reject", body.comment)
+
+    @app.get("/export")
+    def export(user: User = Depends(current_user)):
+        """Every record, in the deployment repo's file format: projects/<id>.yaml, agents/<id>.yaml
+        and projects/_exceptions.yaml (scripts/registry-export.py writes them to Git)."""
+        with reg.db.tx() as c:
+            records = dbm.resources(c)
+            active = c.execute("select revision from publication where state = 'active' "
+                               "order by seq desc limit 1").fetchone()
+        return {"revision": active["revision"] if active else None, **records}
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def metrics():
+        """Prometheus: each project's budget (USD per 30 days), for one alert rule over all
+        projects; cluster-internal, no user token."""
+        with reg.db.tx() as c:
+            rows = c.execute("select id, spec from resource where kind = 'project' order by id").fetchall()
+        lines = ["# HELP project_budget_usd A project's spend cap in USD per 30-day window.",
+                 "# TYPE project_budget_usd gauge"]
+        for r in rows:
+            usd = (r["spec"].get("budget") or {}).get("usd_per_30_days")
+            if usd is not None:
+                lines.append(f'project_budget_usd{{project="{r["id"]}"}} {float(usd)}')
+        return "\n".join(lines) + "\n"
 
     @app.get("/publications")
     def publications(user: User = Depends(current_user)):

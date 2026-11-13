@@ -31,14 +31,20 @@ class Vault:
 
 
 class TransitSigner:
-    """RS256 signatures from a Vault Transit RSA key (pkcs1v15 over SHA-256)."""
+    """RS256 signatures from a Vault Transit RSA key (pkcs1v15 over SHA-256).
 
-    def __init__(self, vault: Vault, key: str, keyid: str, mount: str = "transit"):
-        self.vault, self.key, self.keyid, self.mount = vault, key, keyid, mount
+    Pinned to one key version: OPA verifies a bundle with the one key its config
+    names for it, so a rotation moves the version, the key id and OPA's config in
+    one change (docs/project-registry.md "Rotating the signing key")."""
+
+    def __init__(self, vault: Vault, key: str, keyid: str, mount: str = "transit", version: int | None = None):
+        self.vault, self.key, self.keyid, self.mount, self.version = vault, key, keyid, mount, version
 
     def sign(self, signing_input: bytes) -> bytes:
-        data = self.vault.post(f"{self.mount}/sign/{self.key}", {
-            "input": base64.b64encode(signing_input).decode(),
-            "hash_algorithm": "sha2-256", "signature_algorithm": "pkcs1v15"})["data"]
+        body = {"input": base64.b64encode(signing_input).decode(),
+                "hash_algorithm": "sha2-256", "signature_algorithm": "pkcs1v15"}
+        if self.version:
+            body["key_version"] = self.version
+        data = self.vault.post(f"{self.mount}/sign/{self.key}", body)["data"]
         # "vault:v<version>:<standard base64>"
         return base64.b64decode(data["signature"].split(":", 2)[2])

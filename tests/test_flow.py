@@ -48,16 +48,23 @@ def world(tmp_path, monkeypatch):
     store.activate("gateway-policy", policy_rev)
     signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "opa-bundles")
     renderer = render.Renderer(REPO, tmp_path / "checkouts")
-    roles = {"value": ["project_owner"]}
+    roles = {"value": ["project_owner"], "may_submit": True, "asked": []}
 
     class Resp:
+        def __init__(self, result):
+            self.result = result
+
         def raise_for_status(self):
             pass
 
         def json(self):
-            return {"result": roles["value"]}
+            return {"result": self.result}
 
-    monkeypatch.setattr(api.requests, "post", lambda *a, **k: Resp())
+    def opa(url, json=None, timeout=None):
+        roles["asked"].append((url.rsplit("/", 1)[1], json["input"]))
+        return Resp(roles["may_submit"] if url.endswith("/may_submit") else roles["value"])
+
+    monkeypatch.setattr(api.requests, "post", opa)
     reg = api.Registry(db, renderer, store, "http://opa")
     pub = publisher.Publisher(db, store, signer, renderer, lambda: [], opa=OPA)
     monkeypatch.setattr(publisher, "replay", lambda *a: {"ok": True, "replayed": 0})
@@ -139,3 +146,54 @@ def test_a_failed_replay_publishes_nothing(world, monkeypatch):
         spec = c.execute("select spec from resource where kind='project' and id='admin'").fetchone()["spec"]
     assert row["state"] == "failed" and "replay" in row["error"] and row["replay_report"]["changed_for_other_projects"] == 2
     assert spec["limits"] == {"requests_per_minute": 60}         # the record did not change
+
+
+def test_submit_rights_come_from_policy(world):
+    db, reg, roles = world["db"], world["reg"], world["roles"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    roles["may_submit"] = False
+    with pytest.raises(HTTPException) as e:
+        reg.submit(SEC, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
+    assert e.value.status_code == 403
+    name, asked = roles["asked"][-1]
+    assert name == "may_submit" and asked["requester"] == "sec" and asked["groups"] == ["security-reviewers"]
+    assert asked["owner_group"] == "platform-admins" and asked["change"]["object_id"] == "admin"
+    roles["may_submit"] = None                       # undefined in the policy: no
+    with pytest.raises(HTTPException):
+        reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
+    roles["may_submit"] = True
+    assert reg.submit(ALICE, "project", "admin", "update",
+                      api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))["state"] == "pending_approval"
+
+
+def test_metrics_and_export(world, monkeypatch):
+    from fastapi.testclient import TestClient
+    db = world["db"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    app = api.create_app(world["reg"])
+    app.dependency_overrides[api.current_user] = lambda: ALICE
+    client = TestClient(app)
+    m = client.get("/metrics").text
+    assert '# TYPE project_budget_usd gauge' in m and 'project_budget_usd{project="admin"} 25.0' in m
+    out = client.get("/export").json()
+    assert out["revision"] == "projects-00000001"
+    assert out["project"]["admin"]["limits"] == {"requests_per_minute": 60}
+    assert set(out["exception"]) == {"kagent", "holmes"} and len(out["agent"]) == 5
+
+
+def test_a_key_change_re_signs_the_active_records(world):
+    db, store, pub = world["db"], world["store"], world["pub"]
+    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    assert pub.resign_if_needed() is None                     # same key: nothing to do
+    pub.signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048),
+                                        "opa-bundles-v2")
+    rev = pub.resign_if_needed()
+    assert rev and rev != first and store.active("gateway-projects") == rev
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = store.fetch("gateway-projects", rev, Path(tmp) / "b.tar.gz")
+        assert bundles.signed_keyid(path) == "opa-bundles-v2"
+        bundles.verify(path, pub.signer.public_pem(), "opa-bundles-v2", opa=OPA)
+    assert pub.resign_if_needed() is None
+    with db.tx() as c:
+        assert c.execute("select action from audit_log order by seq desc limit 1").fetchone()["action"] == "resign"
