@@ -9,7 +9,8 @@ recent decisions, build and sign, upload, activate. All of it in one database
 transaction: if any step fails, no record changes, the changes are marked
 `failed` with the reason, and OPA keeps the active bundle.
 
-A change becomes `active` once every OPA reports its revision (api.py /status).
+A change becomes `active` once every ready OPA pod reports its revision
+(activation.py, on every OPA report and every round of this loop).
 """
 from __future__ import annotations
 
