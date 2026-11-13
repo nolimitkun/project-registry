@@ -30,7 +30,7 @@ from pathlib import Path
 
 import boto3
 
-from .bundles import Store, build
+from .bundles import Store, build, signed_keyid
 from .vault import TransitSigner, Vault
 
 
@@ -50,8 +50,12 @@ def run(store: Store, signer, repo: str, ref: str, policy_dir: str, test_dirs: l
     head = git("ls-remote", repo, f"refs/heads/{ref}").split()[0]
     active = store.active(bundle)
     if active == head:
-        print(f"{bundle}: {head} is active, nothing to do", flush=True)
-        return "unchanged"
+        with tempfile.TemporaryDirectory() as tmp:
+            keyid = signed_keyid(store.fetch(bundle, active, Path(tmp) / "active.tar.gz"))
+        if keyid == signer.keyid:
+            print(f"{bundle}: {head} is active, nothing to do", flush=True)
+            return "unchanged"
+        print(f"{bundle}: {head} is signed with {keyid}, not {signer.keyid}: re-signing", flush=True)
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "repo"
         git("clone", "--quiet", "--depth", "1", "--branch", ref, repo, str(work))
@@ -71,7 +75,8 @@ def run(store: Store, signer, repo: str, ref: str, policy_dir: str, test_dirs: l
 def main() -> None:
     s3 = boto3.client("s3", endpoint_url=env("S3_ENDPOINT"), region_name=os.environ.get("AWS_REGION", "us-east-1"))
     store = Store(s3, env("S3_BUCKET"), os.environ.get("BUNDLE_PREFIX", ""))
-    signer = TransitSigner(Vault(env("VAULT_ADDR"), env("VAULT_ROLE")), env("TRANSIT_KEY"), env("SIGNING_KEYID"))
+    signer = TransitSigner(Vault(env("VAULT_ADDR"), env("VAULT_ROLE")), env("TRANSIT_KEY"), env("SIGNING_KEYID"),
+                           version=int(os.environ["SIGNING_KEY_VERSION"]) if os.environ.get("SIGNING_KEY_VERSION") else None)
     run(store, signer, env("POLICY_REPO"), env("POLICY_REF"), env("POLICY_DIR", "policies/gateway"),
         env("POLICY_TEST_DIRS", "policies/gateway,policies/gateway-projects").split(","),
         env("BUNDLE_NAME", "gateway-policy"))

@@ -50,3 +50,19 @@ def test_builds_once_per_commit_and_refuses_a_failing_test(repo):
     with pytest.raises(SystemExit, match="opa test failed"):
         policybuild.run(*args)
     assert store.active("gateway-policy") == first
+
+
+def test_a_key_change_rebuilds_the_same_commit(repo):
+    s3 = FakeS3()
+    store = bundles.Store(s3, "b")
+    old = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "k")
+    new = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "k-v2")
+    args = (str(repo), "main", "policies/gateway", ["policies/gateway", "policies/gateway-projects"],
+            "gateway-policy", OPA)
+    sha = policybuild.run(store, old, *args)
+    assert policybuild.run(store, old, *args) == "unchanged"
+    assert policybuild.run(store, new, *args) == sha            # re-signed, same revision
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        assert bundles.signed_keyid(store.fetch("gateway-policy", sha, Path(tmp) / "b")) == "k-v2"
+    assert policybuild.run(store, new, *args) == "unchanged"

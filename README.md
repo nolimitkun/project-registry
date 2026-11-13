@@ -14,7 +14,7 @@ Projects, their agents and exceptions live in Postgres instead of `projects/*.ya
    | `security` | the `security-reviewers` group |
    | `platform` | the `platform-admins` group |
 
-   Two rules hold for every change: nobody approves their own change, and nobody bypasses approval.
+   Two rules hold for every change: nobody approves their own change, and nobody bypasses approval. Who may propose a change at all is policy too (`data.portal.may_submit`): anyone may request a new project; otherwise only the project's owner group and the platform team.
 3. **Publishing.** The publisher takes approved changes in batches and:
    1. applies them;
    2. renders the bundle;
@@ -24,7 +24,9 @@ Projects, their agents and exceptions live in Postgres instead of `projects/*.ya
    All of this runs in one database transaction.
 4. **Activation.** A change is `active` once every OPA reports its bundle revision (OPA's status plugin posts to `/opa/status`).
 
-Rollback activates an earlier revision and restores the records it was rendered from.
+Rollback activates an earlier revision and restores the records it was rendered from. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
+
+`/metrics` exports `project_budget_usd{project}` for the platform's one budget alert rule. `/export` returns every record in the deployment repo's file format; its `scripts/registry-export.py` writes them back to Git.
 
 The same image also builds the **policy bundle** (`python -m registry.policybuild`): when the Git branch moves, it runs `opa test`, then builds and signs. This replaces OPA Control Plane.
 
@@ -37,6 +39,8 @@ The same image also builds the **policy bundle** (`python -m registry.policybuil
 3. Put the new token into the bundle.
 
 OPA verifies the result like any bundle signed with `--signing-key`, using the public key and the key id (`registry/bundles.py`).
+
+The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle only with the key its config names for it, so a rotation moves the version, the key id (`SIGNING_KEYID`) and OPA's config in one change. When the active bundle is signed with another key, the policy build and the publisher sign it again: the same commit and the same records. The runbook is in the deployment repo's `docs/project-registry.md`.
 
 ## Layout
 

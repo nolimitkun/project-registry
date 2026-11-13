@@ -23,8 +23,7 @@ create table if not exists change_request (
   kind text not null, object_id text not null,
   op text not null check (op in ('create', 'update', 'delete')),
   before jsonb, after jsonb,
-  state text not null check (state in ('pending_approval', 'approved', 'publishing', 'active',
-                                       'rejected', 'failed', 'rolled_back')),
+  state text not null,
   required_approvals jsonb not null,
   replay_report jsonb, bundle_revision text, error text,
   created_by text not null, created_at timestamptz not null default now(),
@@ -47,6 +46,10 @@ create table if not exists audit_log (
   seq bigserial primary key, at timestamptz not null default now(),
   actor text not null, action text not null, object text not null, before jsonb, after jsonb);
 create sequence if not exists bundle_seq;
+-- the states, as a named constraint so a new state is one migration
+alter table change_request drop constraint if exists change_request_state_check;
+alter table change_request add constraint change_request_state_check check (state in (
+  'pending_approval', 'approved', 'publishing', 'active', 'rejected', 'withdrawn', 'failed', 'rolled_back'));
 """
 
 

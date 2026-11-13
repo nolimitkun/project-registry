@@ -22,7 +22,7 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from . import db as dbm
-from .bundles import Store, build
+from .bundles import Store, build, signed_keyid
 from .render import Renderer
 from .replay import fetch, replay
 
@@ -83,6 +83,36 @@ class Publisher:
         log.warning("publishing changes %s failed: %s", ids, failure)
         return None
 
+    def resign_if_needed(self) -> str | None:
+        """After a signing key rotation: publishes the active records again, signed with the
+        current key, so OPA pods configured for the new key have a bundle to load. Returns the
+        new revision, or None when the active bundle is already signed with the current key."""
+        active = self.store.active(self.data_bundle)
+        if not active:
+            return None
+        with tempfile.TemporaryDirectory() as tmp:
+            keyid = signed_keyid(self.store.fetch(self.data_bundle, active, Path(tmp) / "active.tar.gz"))
+        if keyid == self.signer.keyid:
+            return None
+        with self.db.tx() as c:
+            policy_rev = self.store.active(self.policy_bundle)
+            records = dbm.resources(c)
+            seq = c.execute("select nextval('bundle_seq') as n").fetchone()["n"]
+            revision = f"projects-{seq:08d}"
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                data_dir = self.renderer.render(records, policy_rev, tmp / "gateway-projects")
+                build(data_dir, revision, self.signer, tmp / "bundle.tar.gz", opa=self.opa)
+                self.store.put_revision(self.data_bundle, revision, tmp / "bundle.tar.gz")
+                c.execute("update publication set state = 'superseded' where state = 'active'")
+                c.execute("""insert into publication (revision, seq, change_ids, state, policy_revision, records)
+                             values (%s, %s, '{}', 'active', %s, %s)""", (revision, seq, policy_rev, Jsonb(records)))
+                dbm.audit(c, "publisher", "resign", f"{self.data_bundle}@{revision}", {"keyid": keyid},
+                          {"keyid": self.signer.keyid, "records_of": active})
+                self.store.activate(self.data_bundle, revision)
+        log.info("re-signed %s as %s with %s (was %s)", active, revision, self.signer.keyid, keyid)
+        return revision
+
     def _publish(self, c, changes: list[dict]) -> str:
         policy_rev = self.store.active(self.policy_bundle)
         if not policy_rev:
@@ -129,12 +159,20 @@ def main() -> None:
     db.migrate()
     s3 = boto3.client("s3", endpoint_url=env["S3_ENDPOINT"], region_name=env.get("AWS_REGION", "us-east-1"))
     store = Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", ""))
-    signer = TransitSigner(Vault(env["VAULT_ADDR"], env["VAULT_ROLE"]), env["TRANSIT_KEY"], env["SIGNING_KEYID"])
+    signer = TransitSigner(Vault(env["VAULT_ADDR"], env["VAULT_ROLE"]), env["TRANSIT_KEY"], env["SIGNING_KEYID"],
+                           version=int(env["SIGNING_KEY_VERSION"]) if env.get("SIGNING_KEY_VERSION") else None)
     renderer = Renderer(env["DEPLOY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts")
     loki, ns = env["LOKI_URL"], env.get("DECISION_LOG_NAMESPACE", "mini-platform")
     since, limit = env.get("REPLAY_SINCE", "24h"), int(env.get("REPLAY_LIMIT", "2000"))
     pub = Publisher(db, store, signer, renderer, lambda: fetch(loki, ns, since, limit))
     interval = int(env.get("MIN_INTERVAL", "30"))
+    while True:
+        try:
+            pub.resign_if_needed()
+            break
+        except Exception:
+            log.exception("re-signing the active bundle")
+            time.sleep(10)
     while True:
         try:
             if pub.publish_once():

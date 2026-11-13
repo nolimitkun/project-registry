@@ -110,6 +110,16 @@ def build(src: Path, revision: str, signer: Signer, out: Path, opa: str = "opa",
     return payload
 
 
+def signed_keyid(path: Path) -> str | None:
+    """The key id a bundle's signature names (None: unsigned)."""
+    with tarfile.open(path) as tar:
+        sig = _member(tar, SIGNATURES)
+        if sig is None:
+            return None
+        token = json.loads(tar.extractfile(sig).read())["signatures"][0]
+    return json.loads(b64u_decode(token.split(".")[1])).get("keyid")
+
+
 def verify(path: Path, public_pem: str, keyid: str, opa: str = "opa") -> None:
     """Raises CalledProcessError unless OPA accepts the bundle's signature."""
     with tempfile.NamedTemporaryFile("w", suffix=".pem") as f:
