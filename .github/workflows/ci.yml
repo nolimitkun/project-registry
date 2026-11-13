@@ -1,7 +1,6 @@
 name: ci
 on:
   push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -52,6 +51,8 @@ jobs:
         with:
           push: true
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          # every pushed commit gets its sha tag (a branch can be tried on the cluster);
+          # :main only from main
           tags: |
-            ghcr.io/${{ github.repository }}:main
             ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}:main', github.repository) || '' }}
