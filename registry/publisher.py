@@ -97,7 +97,11 @@ class Publisher:
             tmp = Path(tmp)
             data_dir = self.renderer.render(records, policy_rev, tmp / "gateway-projects")
             policy = self.store.fetch(self.policy_bundle, policy_rev, tmp / "policy.tar.gz")
-            report = replay(self.events(), [policy, data_dir], touched, self.opa)
+            active_rev = self.store.active(self.data_bundle)
+            if not active_rev:
+                raise RuntimeError(f"no active {self.data_bundle} bundle to compare with (run the import)")
+            active = self.store.fetch(self.data_bundle, active_rev, tmp / "active.tar.gz")
+            report = replay(self.events(), policy, active, data_dir, touched, self.opa)
             if not report["ok"]:
                 raise ReplayStopped(report)
             out = tmp / "bundle.tar.gz"

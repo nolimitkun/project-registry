@@ -1,9 +1,13 @@
 """Replays recent gateway decisions against a candidate bundle set.
 
 The publisher's safety valve: a change may change decisions for the projects it
-touches, and for no other. Decisions come from OPA's decision log in Loki (the
-format scripts/policy-replay.py in the deployment repo reads); only the `allowed`
-verdict is compared, since the model behind `auto` can change from hour to hour.
+touches, and for no other. The inputs come from OPA's decision log in Loki (the
+format scripts/policy-replay.py in the deployment repo reads). Each is evaluated
+twice under the active policy bundle, with the active data bundle and with the
+candidate, so only the data change shows: a policy or catalog change since the
+request was logged (which would flip verdicts for every project) is not blamed
+on it. Only the `allowed` verdict is compared, since the model behind `auto` can
+change from hour to hour.
 """
 from __future__ import annotations
 
@@ -56,13 +60,13 @@ def evaluate(inputs: list[dict], bundles: list[Path], opa: str = "opa") -> list[
     return json.loads(out.stdout)["result"][0]["expressions"][0]["value"]
 
 
-def compare(events: list[dict], results: list[dict], allowed_projects: set[str]) -> dict:
+def compare(events: list[dict], before: list[dict], after: list[dict], allowed_projects: set[str]) -> dict:
     flips, unexpected = [], []
-    for e, new in zip(events, results):
-        before, after = bool(e["result"].get("allowed")), bool(new.get("allowed"))
-        if before == after:
+    for e, old, new in zip(events, before, after):
+        was, now = bool(old.get("allowed")), bool(new.get("allowed"))
+        if was == now:
             continue
-        flip = {"project": project_of(e), "before": before, "after": after, "time": e.get("time"),
+        flip = {"project": project_of(e), "before": was, "after": now, "time": e.get("time"),
                 "path": e["input"].get("attributes", {}).get("request", {}).get("http", {}).get("path"),
                 "model": (e["input"].get("parsed_body") or {}).get("model")}
         (flips if flip["project"] in allowed_projects else unexpected).append(flip)
@@ -71,8 +75,11 @@ def compare(events: list[dict], results: list[dict], allowed_projects: set[str])
             "ok": not unexpected}
 
 
-def replay(events: list[dict], bundles: list[Path], allowed_projects: set[str], opa: str = "opa") -> dict:
+def replay(events: list[dict], policy: Path, active_data: Path, candidate_data: Path,
+           allowed_projects: set[str], opa: str = "opa") -> dict:
     if not events:
         return {"replayed": 0, "changed_for_changed_projects": 0, "changed_for_other_projects": 0,
                 "examples": [], "ok": True}
-    return compare(events, evaluate([e["input"] for e in events], bundles, opa), allowed_projects)
+    inputs = [e["input"] for e in events]
+    return compare(events, evaluate(inputs, [policy, active_data], opa),
+                   evaluate(inputs, [policy, candidate_data], opa), allowed_projects)

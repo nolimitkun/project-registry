@@ -60,7 +60,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(api.requests, "post", lambda *a, **k: Resp())
     reg = api.Registry(db, renderer, store, "http://opa")
     pub = publisher.Publisher(db, store, signer, renderer, lambda: [], opa=OPA)
-    monkeypatch.setattr(publisher, "replay", lambda events, bundles_, touched, opa: {"ok": True, "replayed": 0})
+    monkeypatch.setattr(publisher, "replay", lambda *a: {"ok": True, "replayed": 0})
     return {"db": db, "store": store, "signer": signer, "renderer": renderer, "reg": reg, "pub": pub,
             "roles": roles, "s3": s3}
 
