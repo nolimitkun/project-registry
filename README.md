@@ -28,6 +28,15 @@ Rollback activates an earlier revision and restores the records it was rendered 
 
 `/metrics` exports `project_budget_usd{project}` for the platform's one budget alert rule. `/export` returns every record in the deployment repo's file format; its `scripts/registry-export.py` writes them back to Git.
 
+**Portal.** The registry serves a page at `/portal/` (one HTML file, `registry/static/portal.html`, same origin as the API) with these views:
+
+- projects, and their changes;
+- proposing a change (a JSON merge patch) or a new project;
+- change requests with their diff, approvals and replay report, and approve, reject and withdraw;
+- the published bundles, with rollback for the platform team.
+
+People log in to Keycloak with the authorization code flow and PKCE, through the public client `project-registry`; there is no client secret. `/opa/status` and `/metrics` refuse requests that came through the ingress.
+
 The same image also builds the **policy bundle** (`python -m registry.policybuild`): when the Git branch moves, it runs `opa test`, then builds and signs. This replaces OPA Control Plane.
 
 ## Signing

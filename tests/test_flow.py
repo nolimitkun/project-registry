@@ -218,3 +218,31 @@ def test_a_change_nobody_can_approve_can_be_withdrawn(world):
     with db.tx() as c:
         assert c.execute("select spec from resource where kind='project' and id='admin'").fetchone()["spec"]["limits"] \
             == {"requests_per_minute": 60}
+
+
+def test_portal_change_list_and_internal_only_endpoints(world, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("KEYCLOAK_ISSUER", "http://keycloak.test/realms/mini-platform")
+    db, reg = world["db"], world["reg"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
+    reg.decide(BOB, ch["id"], "approve", "fine")
+    app = api.create_app(reg)
+    app.dependency_overrides[api.current_user] = lambda: ALICE
+    client = TestClient(app)
+    page = client.get("/portal/")
+    assert page.status_code == 200 and "Project registry" in page.text and "code_challenge_method" in page.text
+    assert client.get("/", follow_redirects=False).headers["location"] == "/portal/"
+    assert client.get("/portal/config.json").json() == {"issuer": "http://keycloak.test/realms/mini-platform",
+                                                       "clientId": "project-registry"}
+    assert client.get("/me").json() == {"name": "alice", "groups": ["platform-admins"]}
+    listed = client.get("/changes?state=open").json()
+    assert [c["id"] for c in listed] == [ch["id"]] and listed[0]["approvals"][0]["approver"] == "bob"
+    assert client.get("/changes?state=active").json() == []
+    assert client.get("/changes?object_id=holmes").json() == []
+    # through the ingress (X-Forwarded-For), the cluster-internal endpoints refuse
+    via_ingress = {"X-Forwarded-For": "203.0.113.7"}
+    assert client.get("/metrics", headers=via_ingress).status_code == 403
+    assert client.post("/opa/status", json={"labels": {"id": "x"}}, headers=via_ingress).status_code == 403
+    assert client.get("/metrics").status_code == 200
+    assert client.post("/opa/status", json={"labels": {"id": "x"}, "bundles": {}}).status_code == 200

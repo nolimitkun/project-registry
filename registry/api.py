@@ -13,8 +13,8 @@ import tempfile
 from pathlib import Path
 
 import requests
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
@@ -24,6 +24,7 @@ from .bundles import Store
 from .render import Renderer, RenderError
 
 KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception"}
+PORTAL = Path(__file__).resolve().parent / "static" / "portal.html"
 
 
 class ChangeIn(BaseModel):
@@ -248,6 +249,56 @@ def create_app(reg: Registry) -> FastAPI:
     def healthz():
         return {"ok": True}
 
+    def internal_only(request: Request) -> None:
+        """/opa/status and /metrics answer only callers inside the cluster. A request through
+        the ingress carries X-Forwarded-For (ingress-nginx always sets it); a forged status
+        report could otherwise mark a change active."""
+        if "x-forwarded-for" in request.headers:
+            raise HTTPException(403, "cluster-internal endpoint")
+
+    # --- the portal: one page, same origin as the API ---
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/portal/")
+
+    @app.get("/portal/", include_in_schema=False)
+    def portal():
+        return FileResponse(PORTAL, media_type="text/html")
+
+    @app.get("/portal/config.json", include_in_schema=False)
+    def portal_config():
+        """Where the browser logs in: the realm's public URL (not the in-cluster one the API
+        checks tokens against) and the public client, with PKCE."""
+        return {"issuer": os.environ.get("KEYCLOAK_ISSUER", ""),
+                "clientId": os.environ.get("KEYCLOAK_CLIENT_ID", "project-registry")}
+
+    @app.get("/changes")
+    def list_changes(state: str | None = None, object_id: str | None = None, limit: int = 50,
+                     user: User = Depends(current_user)):
+        """Change requests, newest first, with their approvals; state=open for the ones still
+        waiting (pending_approval, approved, publishing)."""
+        states = {"open": ["pending_approval", "approved", "publishing"]}.get(state, [state] if state else None)
+        with reg.db.tx() as c:
+            rows = c.execute("""select id, kind, object_id, op, state, required_approvals, bundle_revision,
+                                     error, created_by, created_at, updated_at, before, after
+                              from change_request
+                              where (%(states)s::text[] is null or state = any(%(states)s))
+                                and (%(oid)s::text is null or object_id = %(oid)s)
+                              order by id desc limit %(limit)s""",
+                           {"states": states, "oid": object_id, "limit": max(1, min(limit, 500))}).fetchall()
+            ids = [r["id"] for r in rows]
+            approvals = {}
+            for a in c.execute("select change_id, approver, role, decision, comment, at from approval "
+                               "where change_id = any(%s) order by at", (ids,)):
+                approvals.setdefault(a["change_id"], []).append(a)
+        for r in rows:
+            r["approvals"] = approvals.get(r["id"], [])
+        return rows
+
+    @app.get("/me")
+    def me(user: User = Depends(current_user)):
+        return {"name": user.name, "groups": sorted(user.groups)}
+
     # specific routes first: FastAPI matches in declaration order
     @app.get("/changes/{change_id}")
     def get_change(change_id: int, user: User = Depends(current_user)):
@@ -281,7 +332,7 @@ def create_app(reg: Registry) -> FastAPI:
                                "order by seq desc limit 1").fetchone()
         return {"revision": active["revision"] if active else None, **records}
 
-    @app.get("/metrics", response_class=PlainTextResponse)
+    @app.get("/metrics", response_class=PlainTextResponse, dependencies=[Depends(internal_only)])
     def metrics():
         """Prometheus: each project's budget (USD per 30 days), for one alert rule over all
         projects; cluster-internal, no user token."""
@@ -306,8 +357,8 @@ def create_app(reg: Registry) -> FastAPI:
         return reg.rollback(user, revision)
 
     # OPA's status plugin posts here; cluster-internal, no user token
-    @app.post("/opa/status")
-    @app.post("/opa/status/{partition}")
+    @app.post("/opa/status", dependencies=[Depends(internal_only)])
+    @app.post("/opa/status/{partition}", dependencies=[Depends(internal_only)])
     def opa_status(report: dict, partition: str | None = None):
         reg.status(report)
         return {}
