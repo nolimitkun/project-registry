@@ -21,6 +21,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from . import activation
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .render import Renderer
@@ -174,6 +175,11 @@ def main() -> None:
             log.exception("re-signing the active bundle")
             time.sleep(10)
     while True:
+        try:
+            with db.tx() as c:                      # OPA reports only on changes: check here too
+                activation.activate_due(c, pub.data_bundle, activation.ready_opa_pods())
+        except Exception:
+            log.exception("activation check")
         try:
             if pub.publish_once():
                 time.sleep(interval)

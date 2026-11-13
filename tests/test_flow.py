@@ -246,3 +246,33 @@ def test_portal_change_list_and_internal_only_endpoints(world, monkeypatch):
     assert client.post("/opa/status", json={"labels": {"id": "x"}}, headers=via_ingress).status_code == 403
     assert client.get("/metrics").status_code == 200
     assert client.post("/opa/status", json={"labels": {"id": "x"}, "bundles": {}}).status_code == 200
+
+
+def test_active_counts_only_ready_opa_pods_and_is_checked_without_a_report(world):
+    from registry import activation
+    db, reg, pub, store = world["db"], world["reg"], world["pub"], world["store"]
+    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    report = lambda iid, pod, rev: {"labels": {"id": iid, "pod": pod}, "bundles": {"gateway-projects": {"active_revision": rev}}}
+    reg.opa_pods = lambda: {"opa-old"}
+    reg.status(report("i-old", "opa-old", first))                # the pod about to be replaced
+    ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
+    reg.decide(BOB, ch["id"], "approve", None)
+    rev = pub.publish_once()
+    reg.opa_pods = lambda: {"opa-old", "opa-new"}
+    reg.status(report("i-new", "opa-new", rev))                  # the new pod has it, the old one not
+    def state():
+        with db.tx() as c:
+            return c.execute("select state from change_request where id = %s", (ch["id"],)).fetchone()["state"]
+    assert state() == "publishing"
+    # the old pod is gone: no report arrives, the periodic check activates it
+    with db.tx() as c:
+        assert activation.activate_due(c, "gateway-projects", {"opa-new"}) == [rev]
+    assert state() == "active"
+    # a ready pod that hasn't reported holds activation back
+    ch2 = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 31}}))
+    reg.decide(BOB, ch2["id"], "approve", None)
+    rev2 = pub.publish_once()
+    reg.status(report("i-new", "opa-new", rev2))
+    with db.tx() as c:
+        assert activation.activate_due(c, "gateway-projects", {"opa-new", "opa-third"}) == []
+        assert activation.activate_due(c, "gateway-projects", {"opa-new"}) == [rev2]

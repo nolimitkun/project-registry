@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
+from . import activation
 from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
 from .bundles import Store
@@ -55,6 +56,7 @@ class Registry:
                  policy_bundle="gateway-policy", data_bundle="gateway-projects"):
         self.db, self.renderer, self.store, self.opa_url = db, renderer, store, opa_url.rstrip("/")
         self.policy_bundle, self.data_bundle = policy_bundle, data_bundle
+        self.opa_pods = activation.ready_opa_pods        # replaced in tests
 
     # --- approvals ---
     def required_approvals(self, change: dict, requester: str) -> list[str]:
@@ -191,27 +193,9 @@ class Registry:
 
     # --- activation, from OPA status reports ---
     def status(self, report: dict) -> None:
-        instance = (report.get("labels") or {}).get("id")
-        bundles = {name: b.get("active_revision") for name, b in (report.get("bundles") or {}).items()}
-        if not instance:
-            return
         with self.db.tx() as c:
-            c.execute("""insert into opa_status values (%s, %s, now())
-                         on conflict (instance_id) do update set bundles = excluded.bundles, at = now()""",
-                      (instance, Jsonb(bundles)))
-            live = [r["bundles"].get(self.data_bundle) or "" for r in c.execute(
-                "select bundles from opa_status where at > now() - interval '5 minutes'")]
-            if not live:
-                return
-            everywhere = min(live)         # projects-NNNNNNNN sorts like its number
-            for pub in c.execute("""select revision, change_ids from publication
-                                    where active_at is null and state = 'active' and revision <= %s""",
-                                 (everywhere,)).fetchall():
-                c.execute("update publication set active_at = now() where revision = %s", (pub["revision"],))
-                c.execute("update change_request set state = 'active', updated_at = now() "
-                          "where id = any(%s) and state = 'publishing'", (pub["change_ids"],))
-                dbm.audit(c, "opa", "active", f"{self.data_bundle}@{pub['revision']}", None,
-                          {"changes": pub["change_ids"]})
+            activation.record(c, report)
+            activation.activate_due(c, self.data_bundle, self.opa_pods())
 
     def rollback(self, user: User, revision: str) -> dict:
         if ROLE_GROUPS["platform"] not in user.groups:
