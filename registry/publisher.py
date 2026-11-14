@@ -322,10 +322,12 @@ def main() -> None:
     def chart() -> None:
         """The gateway-models chart of the active policy commit (gatewaychart.py)."""
         nonlocal charted
-        active = store.active(pub.policy_bundle)
-        if not charts or not active or active == charted:
+        if not charts:
             return
         try:
+            active = store.active(pub.policy_bundle)       # MinIO may be down: log, try next round
+            if not active or active == charted:
+                return
             version = gatewaychart.ensure(charts, renderer, active)
             if version:
                 with db.tx() as c:
