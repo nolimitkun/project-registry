@@ -30,10 +30,11 @@ from psycopg.types.json import Jsonb
 
 from . import activation, gatewaychart
 from . import keys as keysmod
+from .health import Health
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
-from .policy import PolicyWatch, same_data
-from .render import Renderer, renderer_from_env
+from .policy import PolicyWatch, Rejected, same_data
+from .render import Renderer, RenderError, renderer_from_env
 from .replay import fetch, replay
 
 log = logging.getLogger("publisher")
@@ -44,6 +45,12 @@ class ReplayStopped(Exception):
         super().__init__(f"replay: decisions changed for {report['changed_for_other_projects']} "
                          "requests of projects the change does not touch")
         self.report = report
+
+
+# A change that fails for what it is (its records don't render, the replay stops it, a
+# recheck refuses it) is the change's failure. Anything else (signing, the store, Vault)
+# is the publisher's: the change is failed all the same, and the error goes on to health.py.
+CHANGE_FAULTS = (ReplayStopped, RenderError, Rejected)
 
 
 class Everyone(set):
@@ -131,6 +138,8 @@ class Publisher:
             if not ids:
                 raise
             self._failed(ids, e, self.policy_bundle)
+            if not isinstance(e, CHANGE_FAULTS):
+                raise                                       # the publisher's own failure: health sees it
             return None
 
     def _still_checked(self, c, ch: dict) -> bool:
@@ -199,6 +208,8 @@ class Publisher:
             if not ids:
                 raise
             self._failed(ids, e, self.data_bundle)
+            if not isinstance(e, CHANGE_FAULTS):
+                raise                                       # the publisher's own failure: health sees it
             return None
 
     # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in: in
@@ -330,58 +341,53 @@ def main() -> None:
     agentregistry, synced = env.get("AGENTREGISTRY_URL"), 0.0
     charts = gatewaychart.HelmRepo(s3, env["GATEWAY_MODELS_BUCKET"]) if env.get("GATEWAY_MODELS_BUCKET") else None
     charted = None
-    keys_mount, keyed, keyed_at, keys_retry = env.get("GATEWAY_KEYS_MOUNT"), None, 0.0, 0.0
+    keys_mount, keyed, keyed_at = env.get("GATEWAY_KEYS_MOUNT"), None, 0.0
+    health = Health(db)
 
+    # Each output is one step per round (health.py): it finishes or raises, and a failure is
+    # recorded, served on /metrics and retried, while the other outputs go on.
     def gateway_keys() -> None:
         """The gateway's key maps in Vault (keys.py), after every data bundle and every
         five minutes (which also mends a map changed in Vault by hand)."""
-        nonlocal keyed, keyed_at, keys_retry
-        if not keys_mount or time.time() < keys_retry:
-            return
-        try:
-            state = (store.active(pub.policy_bundle), store.active(pub.data_bundle))
-            if not all(state) or (state == keyed and time.time() - keyed_at < 300):
-                return                              # before the import: no keys to write yet
+        nonlocal keyed, keyed_at
+        state = (store.active(pub.policy_bundle), store.active(pub.data_bundle))
+        if not all(state) or (state == keyed and time.time() - keyed_at < 300):
+            return                                  # before the import: no keys to write yet
+        with db.tx() as c:
+            records = dbm.resources(c)
+
+        def wrote(name: str, diff: dict) -> None:   # each map as it is written (key ids only)
             with db.tx() as c:
-                records = dbm.resources(c)
-            def wrote(name: str, diff: dict) -> None:       # each map as it is written (key ids only)
-                with db.tx() as c:
-                    dbm.audit(c, "publisher", "keys", name, None, diff)
-            keysmod.reconcile(signer.vault, keys_mount, keysmod.wanted(renderer.lines(records, state[0], "--keys")),
-                              wrote=wrote)
-            keyed, keyed_at = state, time.time()
-        except Exception:
-            keys_retry = time.time() + 60                   # Vault down or no permission: once a minute
-            log.exception("writing the gateway's key maps")
+                dbm.audit(c, "publisher", "keys", name, None, diff)
+        keysmod.reconcile(signer.vault, keys_mount, keysmod.wanted(renderer.lines(records, state[0], "--keys")),
+                          wrote=wrote)
+        keyed, keyed_at = state, time.time()
 
     def chart() -> None:
         """The gateway-models chart of the active policy commit (gatewaychart.py)."""
         nonlocal charted
-        if not charts:
+        active = store.active(pub.policy_bundle)
+        state = (active, store.active(pub.data_bundle))   # the catalog's records travel with the data
+        if not active or state == charted:
             return
-        try:
-            # MinIO may be down: log, try next round
-            active = store.active(pub.policy_bundle)
-            state = (active, store.active(pub.data_bundle))   # the catalog's records travel with the data
-            if not active or state == charted:
-                return
+        with db.tx() as c:
+            records = dbm.resources(c)
+        version = gatewaychart.ensure(charts, renderer, active, records)
+        if version:
             with db.tx() as c:
-                records = dbm.resources(c)
-            version = gatewaychart.ensure(charts, renderer, active, records)
-            if version:
-                with db.tx() as c:
-                    dbm.audit(c, "publisher", "publish", f"gateway-models@{version}", None, {"policy": active})
-            charted = state
-        except Exception:
-            log.exception("publishing the gateway-models chart")
+                dbm.audit(c, "publisher", "publish", f"gateway-models@{version}", None, {"policy": active})
+        charted = state
+
+    def activate() -> None:
+        with db.tx() as c:                          # OPA reports only on changes: check here too
+            activation.activate_due(c, pub.data_bundle, activation.ready_opa_pods(),
+                                    policy_bundle=pub.policy_bundle)
 
     def sync() -> None:
         nonlocal synced
         synced = time.time()
-        try:
-            pub.sync_agentregistry(agentregistry)
-        except Exception:
-            log.exception("syncing agentregistry's catalog")
+        health.run("agentregistry", pub.sync_agentregistry, agentregistry)
+
     while True:
         try:
             watch.bootstrap()                       # a new cluster: the branch's head, unapproved
@@ -395,29 +401,19 @@ def main() -> None:
     while True:
         if time.time() - polled >= poll:
             polled = time.time()
-            try:
-                watch.propose()
-            except Exception:
-                log.exception("proposing the policy branch's head")
+            health.run("policy", watch.propose)
         if time.time() - synced >= 3600:
             sync()
-        chart()
-        gateway_keys()
-        try:
-            with db.tx() as c:                      # OPA reports only on changes: check here too
-                activation.activate_due(c, pub.data_bundle, activation.ready_opa_pods(),
-                                        policy_bundle=pub.policy_bundle)
-        except Exception:
-            log.exception("activation check")
-        try:
-            if pub.publish_once():
-                sync()                              # the agents may have changed
-                time.sleep(interval)
-                continue
-        except Exception:
-            log.exception("publish loop")
+        if charts:
+            health.run("chart", chart)
+        if keys_mount:
+            health.run("keys", gateway_keys, retry_after=60)    # Vault down or no permission: once a minute
+        health.run("activation", activate)
+        if health.run("data", pub.publish_once):
+            sync()                                  # the agents may have changed
+            time.sleep(interval)
+            continue
         time.sleep(5)
-
 
 if __name__ == "__main__":
     main()

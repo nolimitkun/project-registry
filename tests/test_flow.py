@@ -455,3 +455,45 @@ def test_the_catalog_is_changed_by_request_into_the_data_bundle_and_the_chart(wo
     records["google_api"]["speech"] = {**records["google_api"]["speech"], "host": "elsewhere.googleapis.com"}
     values = gatewaychart.catalog_values(world["renderer"], rev, records)
     assert values["googleApis"]["speech"]["host"] == "elsewhere.googleapis.com"
+
+
+def test_publisher_outputs_report_their_health_on_metrics(world):
+    import time as t
+    from fastapi.testclient import TestClient
+    from registry.health import Health
+    db = world["db"]
+    h = Health(db, write_every=0)
+    assert h.run("chart", lambda: "published") == "published"
+    calls = []
+
+    def vault_refuses():
+        calls.append(1)
+        raise RuntimeError("403 Forbidden")
+    assert h.run("keys", vault_refuses, retry_after=60) is None             # never raises
+    assert h.run("keys", vault_refuses, retry_after=60) is None and len(calls) == 1   # waits to retry
+    with db.tx() as c:
+        row = c.execute("select * from publisher_health where output = 'keys'").fetchone()
+    assert row["last_success"] is None and "403 Forbidden" in row["last_error"]
+    body = TestClient(api.create_app(world["reg"])).get("/metrics").text
+    ok = [l for l in body.splitlines() if l.startswith('registry_output_last_success_timestamp_seconds{output="chart"}')]
+    assert ok and abs(float(ok[0].split()[-1]) - t.time()) < 60
+    assert 'registry_output_last_failure_timestamp_seconds{output="keys"}' in body
+    assert 'registry_output_last_success_timestamp_seconds{output="keys"}' not in body
+
+
+def test_a_signing_failure_fails_the_change_and_reaches_health(world, monkeypatch):
+    from registry.health import Health
+    db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 61}}))
+    reg.decide(BOB, ch["id"], "approve", None)
+
+    def vault_refuses(*a, **k):
+        raise RuntimeError("Vault: permission denied")
+    monkeypatch.setattr(world["signer"], "sign", vault_refuses)
+    h = Health(db, write_every=0)
+    assert h.run("data", pub.publish_once) is None
+    with db.tx() as c:
+        assert c.execute("select state from change_request where id = %s", (ch["id"],)).fetchone()["state"] == "failed"
+        row = c.execute("select last_success, last_error from publisher_health where output = 'data'").fetchone()
+    assert row["last_success"] is None and "permission denied" in row["last_error"]

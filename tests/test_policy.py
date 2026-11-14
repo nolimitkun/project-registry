@@ -208,7 +208,8 @@ def test_a_failed_policy_activation_puts_the_data_back(world, monkeypatch):
         activate(bundle, revision)
 
     monkeypatch.setattr(store, "activate", flaky)
-    assert world["pub"].publish_once() is None
+    with pytest.raises(RuntimeError, match="store unavailable"):    # the publisher's failure: health sees it
+        world["pub"].publish_once()
     assert store.active("gateway-policy") == first and store.active("gateway-projects") == data
     assert state(db, cid)["state"] == "failed" and sha
     with db.tx() as c:
