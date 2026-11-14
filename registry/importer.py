@@ -38,7 +38,7 @@ def run(db: dbm.DB, store, signer, renderer, owner_group: str, data_bundle="gate
         policy_bundle="gateway-policy", opa="opa") -> str:
     policy_rev = store.active(policy_bundle)
     if not policy_rev:
-        raise SystemExit(f"no active {policy_bundle}: run the policy build first")
+        raise SystemExit(f"no active {policy_bundle}: the publisher publishes the policy first (it bootstraps an empty store)")
     checkout = renderer.checkout(policy_rev)
     records = import_git(checkout)
     with db.tx() as c, tempfile.TemporaryDirectory() as tmp:
