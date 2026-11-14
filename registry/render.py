@@ -41,7 +41,8 @@ class KagentWiring:
              "KAGENT_RESOURCES": "minikube/values/kagent-resources.yaml"}
 
     def __init__(self, repo: str, ref: str, cache: Path, ttl: int = 300):
-        self.repo, self.ref, self.cache, self.ttl = repo, ref, cache, ttl
+        # absolute: gen-projects.py runs in another directory (a copy of the policy repo)
+        self.repo, self.ref, self.cache, self.ttl = repo, ref, cache.resolve(), ttl
         self.fetched = 0.0
 
     def env(self) -> dict[str, str]:

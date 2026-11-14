@@ -393,7 +393,7 @@ def test_a_proposed_kagent_agent_is_checked_against_the_deployment_repos_wiring(
         c.execute("update change_request set state = 'withdrawn'")
     reg.kagent_wiring = rmod.KagentWiring(os.environ.get("KAGENT_WIRING_REPO",
                                                          "https://github.com/nolimitkun/mini-platform-deployment.git"),
-                                          "main", tmp_path)
+                                          "main", Path(os.path.relpath(tmp_path)))   # a relative WORKDIR
     with pytest.raises(HTTPException) as e:
         reg.submit(ALICE, "agent", "kagent-k8s-agent", "update", unwired)
     assert e.value.status_code == 422 and "vaultSecrets" in str(e.value.detail)
