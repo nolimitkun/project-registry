@@ -218,6 +218,9 @@ class Registry:
                 c.execute("update publication set state = 'rolled_back' where revision = %s", (p["revision"],))
                 c.execute("update change_request set state = 'rolled_back', updated_at = now() where id = any(%s)",
                           (p["change_ids"],))
+            # rolling forward to a later revision leaves an earlier one active: supersede it
+            c.execute("update publication set state = 'superseded' where state = 'active' and revision <> %s",
+                      (revision,))
             c.execute("update publication set state = 'active' where revision = %s", (revision,))
             dbm.audit(c, user.name, "rollback", f"{self.data_bundle}@{revision}", None,
                       {"rolled_back": [p["revision"] for p in later]})
@@ -240,6 +243,8 @@ class Registry:
             c.execute("update policy_publication set state = 'rolled_back' where revision = %s", (p["revision"],))
             c.execute("update change_request set state = 'rolled_back', updated_at = now() where id = %s",
                       (p["change_id"],))
+        c.execute("update policy_publication set state = 'superseded' where state = 'active' and revision <> %s",
+                  (revision,))
         c.execute("update policy_publication set state = 'active', active_at = null where revision = %s", (revision,))
         dbm.audit(c, user.name, "rollback", f"{self.policy_bundle}@{revision}", None,
                   {"rolled_back": [p["revision"] for p in later]})

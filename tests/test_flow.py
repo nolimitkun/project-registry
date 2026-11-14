@@ -119,6 +119,11 @@ def test_import_matches_git_then_a_change_goes_through_approval_publish_and_acti
         actions = [r["action"] for r in c.execute("select action from audit_log order by seq")]
     assert actions[0] == "import" and actions[-1] == "rollback"
 
+    # and forward again: one active publication
+    assert reg.rollback(ALICE, rev) == {"active": rev, "rolled_back": []}
+    with db.tx() as c:
+        assert [r["revision"] for r in c.execute("select revision from publication where state = 'active'")] == [rev]
+
 
 def test_invalid_changes_are_refused_before_approval(world):
     db, reg = world["db"], world["reg"]

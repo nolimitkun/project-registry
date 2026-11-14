@@ -169,6 +169,11 @@ def test_a_commit_is_proposed_approved_published_and_activated(world):
     assert reg.rollback(BOB, first) == {"active": first, "rolled_back": [sha]}
     assert store.active("gateway-policy") == first and state(db, cid)["state"] == "rolled_back"
     assert watch.propose() is None
+    # and forward again: one active publication
+    assert reg.rollback(BOB, sha) == {"active": sha, "rolled_back": []}
+    with db.tx() as c:
+        assert [r["revision"] for r in c.execute(
+            "select revision from policy_publication where state = 'active'")] == [sha]
 
 
 def test_a_newer_commit_supersedes_and_a_failing_test_publishes_nothing(world):
