@@ -67,3 +67,10 @@ def test_a_request_without_a_body_replays_one_whose_body_was_dropped_does_not():
     assert replay.replayable(logged("GET", ["/input/parsed_body", "/input/truncated_body"]))
     assert not replay.replayable(logged("POST", ["/input/parsed_body", "/input/truncated_body"]))
     assert replay.replayable(logged("POST", ["/input/truncated_body"]))
+    # a GET that carried a body (a JSON-RPC call to /mcp) lost what the policy decided on
+    with_body = logged("GET", ["/input/parsed_body"])
+    with_body["input"]["attributes"]["request"]["http"]["headers"] = {"content-length": "57"}
+    assert not replay.replayable(with_body)
+    chunked = logged("DELETE", ["/input/parsed_body"])
+    chunked["input"]["attributes"]["request"]["http"]["headers"] = {"Transfer-Encoding": "chunked"}
+    assert not replay.replayable(chunked)

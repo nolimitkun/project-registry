@@ -53,8 +53,16 @@ def replayable(event: dict) -> bool:
     body was dropped (or logged before the mask kept the model) doesn't."""
     if "/input/parsed_body" not in (event.get("erased") or []):
         return True
-    method = event["input"].get("attributes", {}).get("request", {}).get("http", {}).get("method", "")
-    return method.upper() in BODILESS
+    return bodiless(event["input"].get("attributes", {}).get("request", {}).get("http", {}))
+
+
+def bodiless(http: dict) -> bool:
+    """A request that carried no body: a method without one, and no Content-Length above 0
+    or Transfer-Encoding (a GET may carry a body, such as a JSON-RPC call to /mcp)."""
+    headers = {k.lower(): v for k, v in (http.get("headers") or {}).items()}
+    length = str(headers.get("content-length", "0")).strip() or "0"
+    return (http.get("method", "").upper() in BODILESS and "transfer-encoding" not in headers
+            and length.isdigit() and int(length) == 0)
 
 
 def project_of(event: dict) -> str | None:
