@@ -301,3 +301,55 @@ def test_policy_repo_must_be_the_deploy_repo(world, monkeypatch):
     monkeypatch.setenv("OPA_URL", "http://opa")
     with pytest.raises(SystemExit, match="POLICY_REPO must be DEPLOY_REPO"):
         policy.from_env(world["db"], world["store"], world["signer"], world["watch"].renderer, lambda: [])
+
+
+def publish_records(world, on: bool) -> str:
+    """Project a's records changed and published at the active policy, as a data change would."""
+    db, store, signer = world["db"], world["store"], world["signer"]
+    policy_rev = store.active("gateway-policy")
+    with db.tx() as c, tempfile.TemporaryDirectory() as tmp:
+        c.execute("update resource set spec = %s where kind = 'project' and id = 'a'", (Jsonb({"on": on}),))
+        seq = c.execute("select nextval('bundle_seq') as n").fetchone()["n"]
+        rev = f"projects-{seq:08d}"
+        data = world["watch"].renderer.render(dbm.resources(c), policy_rev, Path(tmp) / "d")
+        bundles.build(data, rev, signer, Path(tmp) / "d.tar.gz", opa=OPA)
+        store.put_revision("gateway-projects", rev, Path(tmp) / "d.tar.gz")
+        c.execute("update publication set state = 'superseded' where state = 'active'")
+        c.execute("""insert into publication (revision, seq, change_ids, state, policy_revision, records)
+                     values (%s, %s, '{}', 'active', %s, '{}')""", (rev, seq, policy_rev))
+        store.activate("gateway-projects", rev)
+    return rev
+
+
+def test_records_published_while_waiting_are_checked_again_before_the_policy(world):
+    db, store, first = world["db"], world["store"], world["first"]
+    publish_records(world, False)
+    # needs the new format; safe while project a is off (every pair denies it)
+    commit(world["repo"], "rule reads the new format", fmt=2, rule="data.projects[input.p].on; data.projects[input.p].format == 2",
+           test=TEST.replace('{"a": {"on": true}}', '{"a": {"on": true, "format": 2}}'))
+    cid = world["watch"].propose()
+    assert state(db, cid)["state"] == "pending_approval"
+    world["reg"].decide(BOB, cid, "approve", None)
+    publish_records(world, True)            # now the new policy with the old data denies a: unsafe
+    assert world["pub"].publish_once() is None
+    assert state(db, cid)["state"] == "failed" and "Stage it" in state(db, cid)["error"]
+    assert store.active("gateway-policy") == first
+
+
+def test_a_replay_that_changes_after_the_approval_goes_back_to_the_approvers(world):
+    db, store, first = world["db"], world["store"], world["first"]
+    publish_records(world, False)
+    sha = commit(world["repo"], "deny a", rule='data.projects[input.p].on; input.p != "a"',
+                 test=TEST.replace('"a"', '"c"'))
+    cid = world["watch"].propose()                     # a is off: nothing flips
+    world["reg"].decide(BOB, cid, "approve", None)
+    publish_records(world, True)                       # now a would flip from allowed to denied
+    assert world["pub"].publish_once() is None
+    ch = state(db, cid)
+    assert ch["state"] == "pending_approval" and "approve again" in ch["error"]
+    with db.tx() as c:
+        assert not c.execute("select 1 from approval where change_id = %s", (cid,)).fetchone()
+        assert c.execute("select replay_report from change_request where id = %s",
+                         (cid,)).fetchone()["replay_report"]["allowed_to_denied"] == 1
+    world["reg"].decide(BOB, cid, "approve", "seen the flip")
+    assert world["pub"].publish_once() == sha and state(db, cid) == {"state": "publishing", "error": None}

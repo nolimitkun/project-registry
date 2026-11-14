@@ -185,7 +185,7 @@ class PolicyWatch:
         before = {"commit": active}
         change = {"kind": "policy", "object_id": sha, "op": "update", "before": before, "after": info}
         try:
-            report = self._check(sha, active)
+            report = self.check(sha, active)
             error = None
         except Rejected as e:
             report, error = None, str(e)
@@ -210,8 +210,10 @@ class PolicyWatch:
         log.info("policy change %s for %s: %s", row["id"], sha, error or "pending approval")
         return row["id"]
 
-    def _check(self, sha: str, active: str) -> dict:
-        """Test, build, render the records, replay. Rejected for what the commit itself gets wrong."""
+    def check(self, sha: str, active: str) -> dict:
+        """Test, build, render the records, replay. Rejected for what the commit itself gets wrong.
+        The report names the bundles it was checked against, so the publisher can tell whether
+        it still holds."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             new_policy = self.ensure_built(sha, tmp)
@@ -227,7 +229,8 @@ class PolicyWatch:
             except RenderError as e:
                 raise Rejected(f"the registry's records don't render at {sha[:12]}: {e}") from e
             events = self.events()
-            report = replay_all(events, [old_policy, old_data], [new_policy, new_data], self.opa)
+            report = {"policy_revision": active, "data_revision": data_rev}
+            report |= replay_all(events, [old_policy, old_data], [new_policy, new_data], self.opa)
             report["records_change"] = not same_data(new_data, old_data)
             if report["records_change"]:
                 # Each OPA loads the two bundles on its own, so for a while it may run the old

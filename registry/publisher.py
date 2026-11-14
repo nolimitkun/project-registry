@@ -89,12 +89,14 @@ class Publisher:
                     raise RuntimeError("this publisher has no policy source")
                 ids = [ch["id"]]
                 sha = ch["object_id"]
+                if not self._still_checked(c, ch):
+                    return None
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp = Path(tmp)
                     self.policy.ensure_built(sha, tmp)
                     data = self._render_at(c, sha, tmp)
                     c.execute("update outbox set published_at = now() where change_id = %s", (ch["id"],))
-                    c.execute("update change_request set state = 'publishing', bundle_revision = %s, "
+                    c.execute("update change_request set state = 'publishing', bundle_revision = %s, error = null, "
                               "updated_at = now() where id = %s", (sha, ch["id"]))
                     self.policy.record(c, sha, ch["id"])
                     dbm.audit(c, "publisher", "publish", f"{self.policy_bundle}@{sha}", None,
@@ -117,6 +119,34 @@ class Publisher:
                 raise
             self._failed(ids, e, self.policy_bundle)
             return None
+
+    def _still_checked(self, c, ch: dict) -> bool:
+        """Whether the approved check still holds. If either bundle was published since, the
+        check runs again on what is active now (raising Rejected fails the change). If what the
+        approvers were shown changed (the records republished or not, verdicts flipping where
+        none did), the change goes back to them: False."""
+        old = ch["replay_report"] or {}
+        active = self.store.active(self.policy_bundle)
+        if (old.get("policy_revision"), old.get("data_revision")) == (active, self.store.active(self.data_bundle)):
+            return True
+        new = self.policy.check(ch["object_id"], active)
+        if (old.get("records_change") == new["records_change"]
+                and bool(old.get("allowed_to_denied")) == bool(new["allowed_to_denied"])
+                and bool(old.get("denied_to_allowed")) == bool(new["denied_to_allowed"])):
+            c.execute("update change_request set replay_report = %s where id = %s", (Jsonb(new), ch["id"]))
+            return True
+        approvals = c.execute("select approver, role, comment, at::text from approval where change_id = %s",
+                              (ch["id"],)).fetchall()
+        c.execute("delete from approval where change_id = %s", (ch["id"],))
+        c.execute("delete from outbox where change_id = %s", (ch["id"],))
+        c.execute("update change_request set state = 'pending_approval', replay_report = %s, error = %s, "
+                  "updated_at = now() where id = %s",
+                  (Jsonb(new), "the bundles changed since this was approved, and so did its replay: approve again",
+                   ch["id"]))
+        dbm.audit(c, "publisher", "reapproval", f"change/{ch['id']}", {"approvals": approvals, "report": old},
+                  {"report": new})
+        log.info("policy change %s: its check changed since the approval; back to approval", ch["id"])
+        return False
 
     def _render_at(self, c, sha: str, tmp: Path) -> str | None:
         """The active records rendered at the policy commit, published as a new data revision
