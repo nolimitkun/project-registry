@@ -3,6 +3,8 @@ only by whom policy allows (OPA: data.portal.may_submit), validated by rendering
 the whole bundle with it, its approvals decided by policy
 (data.portal.required_approvals; both Rego in the deployment repo), approved by
 other people than its author (or withdrawn), then published by the publisher.
+Policy changes (kind `policy`, a commit of the Rego in Git) are filed by the
+publisher itself (policy.py) and approved here the same way.
 
     uvicorn registry.api:app
 """
@@ -19,10 +21,12 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
-from . import activation
+from . import activation, approvals
 from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
+from . import bundles
 from .bundles import Store
+from .policy import same_data
 from .render import Renderer, RenderError
 
 KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception"}
@@ -54,20 +58,18 @@ def merge(base: dict, patch: dict) -> dict:
 
 class Registry:
     def __init__(self, db: dbm.DB, renderer: Renderer, store: Store, opa_url: str,
-                 policy_bundle="gateway-policy", data_bundle="gateway-projects"):
+                 policy_bundle="gateway-policy", data_bundle="gateway-projects", signing_keyid: str | None = None):
         self.db, self.renderer, self.store, self.opa_url = db, renderer, store, opa_url.rstrip("/")
         self.policy_bundle, self.data_bundle = policy_bundle, data_bundle
+        self.signing_keyid = signing_keyid or os.environ.get("SIGNING_KEYID")
         self.opa_pods = activation.ready_opa_pods        # replaced in tests
 
     # --- approvals ---
     def required_approvals(self, change: dict, requester: str) -> list[str]:
-        r = requests.post(f"{self.opa_url}/v1/data/portal/required_approvals",
-                          json={"input": {"change": change, "requester": requester}}, timeout=5)
-        r.raise_for_status()
-        roles = r.json().get("result")
-        if not isinstance(roles, list) or not roles or not set(roles) <= {*ROLE_GROUPS, "project_owner"}:
-            raise HTTPException(503, f"approval policy gave no valid answer: {roles!r}")   # fail closed
-        return sorted(set(roles))
+        try:
+            return approvals.required(self.opa_url, change, requester)
+        except approvals.NoAnswer as e:
+            raise HTTPException(503, str(e)) from e                                     # fail closed
 
     def may_submit(self, change: dict, user: User, owner_group: str | None) -> bool:
         """data.portal.may_submit: who may propose this change at all (approval is separate)."""
@@ -196,17 +198,22 @@ class Registry:
     def status(self, report: dict) -> None:
         with self.db.tx() as c:
             activation.record(c, report)
-            activation.activate_due(c, self.data_bundle, self.opa_pods())
+            activation.activate_due(c, self.data_bundle, self.opa_pods(), policy_bundle=self.policy_bundle)
 
     def rollback(self, user: User, revision: str) -> dict:
         if ROLE_GROUPS["platform"] not in user.groups:
             raise HTTPException(403, "rollback is for the platform team")
         with self.db.tx() as c:
+            if c.execute("select 1 from policy_publication where revision = %s", (revision,)).fetchone():
+                return self._rollback_policy(c, user, revision)
             pub = c.execute("select * from publication where revision = %s", (revision,)).fetchone()
             if not pub:
                 raise HTTPException(404, "no such revision")
             later = c.execute("select revision, change_ids from publication where seq > %s and state <> 'rolled_back'",
                               (pub["seq"],)).fetchall()
+            policy_rev = self.store.active(self.policy_bundle)
+            if pub["policy_revision"] != policy_rev:
+                self._data_fits(c, policy_rev, records=pub["records"], bundle=revision)
             c.execute("delete from resource")
             for kind, items in pub["records"].items():
                 for oid, spec in items.items():
@@ -215,11 +222,51 @@ class Registry:
                 c.execute("update publication set state = 'rolled_back' where revision = %s", (p["revision"],))
                 c.execute("update change_request set state = 'rolled_back', updated_at = now() where id = any(%s)",
                           (p["change_ids"],))
+            # rolling forward to a later revision leaves an earlier one active: supersede it
+            c.execute("update publication set state = 'superseded' where state = 'active' and revision <> %s",
+                      (revision,))
             c.execute("update publication set state = 'active' where revision = %s", (revision,))
             dbm.audit(c, user.name, "rollback", f"{self.data_bundle}@{revision}", None,
                       {"rolled_back": [p["revision"] for p in later]})
             self.store.activate(self.data_bundle, revision)      # last, as in the publisher
             return {"active": revision, "rolled_back": [p["revision"] for p in later]}
+
+    def _data_fits(self, c, policy_rev: str, records: dict | None = None, bundle: str | None = None) -> None:
+        """A rollback activates one bundle only. Refuse it (409) when the project data it would
+        run with is not what the policy commit renders: the format may have changed between
+        commits. records/bundle: those of a data rollback; by default, the active ones."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rendered = self.renderer.render(records if records is not None else dbm.resources(c), policy_rev,
+                                            Path(tmp) / "render")
+            bundle = bundle or self.store.active(self.data_bundle)
+            if not same_data(rendered, self.store.fetch(self.data_bundle, bundle, Path(tmp) / "data.tar.gz")):
+                raise HTTPException(409, f"the project data renders differently at policy {policy_rev[:12]}: "
+                                         "roll back with a new commit (a revert), which republishes both")
+
+    def _rollback_policy(self, c, user: User, revision: str) -> dict:
+        """An earlier policy commit, as it was signed. The branch's head isn't proposed again
+        (it has its change); the next commit is, a revert for instance."""
+        pub = c.execute("select * from policy_publication where revision = %s for update", (revision,)).fetchone()
+        if pub["state"] == "active":
+            raise HTTPException(409, f"{revision} is the active policy")
+        with tempfile.TemporaryDirectory() as tmp:
+            keyid = bundles.signed_keyid(self.store.fetch(self.policy_bundle, revision, Path(tmp) / "b.tar.gz"))
+        if keyid != self.signing_keyid:
+            raise HTTPException(409, f"{revision} is signed with {keyid}, which OPA no longer accepts")
+        self._data_fits(c, revision)
+        later = c.execute("select revision, change_id from policy_publication where seq > %s and state <> 'rolled_back'",
+                          (pub["seq"],)).fetchall()
+        for p in later:
+            c.execute("update policy_publication set state = 'rolled_back' where revision = %s", (p["revision"],))
+            c.execute("update change_request set state = 'rolled_back', updated_at = now() where id = %s",
+                      (p["change_id"],))
+        c.execute("update policy_publication set state = 'superseded' where state = 'active' and revision <> %s",
+                  (revision,))
+        c.execute("update policy_publication set state = 'active', active_at = null where revision = %s", (revision,))
+        dbm.audit(c, user.name, "rollback", f"{self.policy_bundle}@{revision}", None,
+                  {"rolled_back": [p["revision"] for p in later]})
+        self.store.activate(self.policy_bundle, revision)
+        return {"active": revision, "rolled_back": [p["revision"] for p in later]}
 
 
 def create_app(reg: Registry) -> FastAPI:
@@ -334,8 +381,13 @@ def create_app(reg: Registry) -> FastAPI:
     @app.get("/publications")
     def publications(user: User = Depends(current_user)):
         with reg.db.tx() as c:
-            return c.execute("select revision, change_ids, state, policy_revision, created_at, active_at "
-                             "from publication order by seq desc limit 50").fetchall()
+            return c.execute(f"""select '{reg.data_bundle}' as bundle, revision, change_ids, state, policy_revision,
+                                        created_at, active_at, seq from publication
+                                 union all
+                                 select '{reg.policy_bundle}', revision,
+                                        case when change_id is null then '{{}}'::bigint[] else array[change_id] end,
+                                        state, revision, created_at, active_at, seq from policy_publication
+                                 order by seq desc limit 50""").fetchall()
 
     @app.post("/rollback/{revision}")
     def rollback(revision: str, user: User = Depends(current_user)):

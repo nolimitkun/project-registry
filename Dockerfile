@@ -1,7 +1,7 @@
-# One image, three commands:
+# One image, four commands:
 #   uvicorn registry.api:app --host 0.0.0.0 --port 8080   the registry API
-#   python -m registry.publisher                          publishes approved changes
-#   python -m registry.policybuild                        builds the policy bundle from Git
+#   python -m registry.publisher                          files policy commits as changes, publishes approved changes
+#   python -m registry.gitexport                          daily export of the records to Git
 #   python -m registry.importer --owner-group G           first load from projects/*.yaml
 FROM openpolicyagent/opa:1.22.2-static AS opa
 

@@ -42,3 +42,19 @@ def test_a_verdict_logged_under_another_policy_is_not_blamed_on_the_change(tmp_p
     (data / ".manifest").write_text(json.dumps({"roots": ["projects"]}))
     report = replay.replay([event("a", False), event("b", False)], policy, data, data, set(), OPA)
     assert report["ok"] and report["changed_for_other_projects"] == 0
+
+
+def test_an_undefined_decision_is_a_denial_and_keeps_the_order(tmp_path):
+    def policy(name, rego):
+        d = tmp_path / name
+        (d / "gateway").mkdir(parents=True)
+        (d / ".manifest").write_text(json.dumps({"roots": ["gateway"]}))
+        (d / "gateway" / "authz.rego").write_text("package gateway.authz\n\nimport rego.v1\n\n" + rego)
+        return d
+    p = "input.attributes.metadataContext.filterMetadata.agentgateway.project"
+    old = policy("old", 'decision := {"allowed": true}\n')
+    new = policy("new", f'decision := {{"allowed": true}} if {p} == "b"\n')   # no default: undefined for a
+    events = [event("a", True), event("b", True)]
+    report = replay.replay_all(events, [old], [new], OPA)
+    assert (report["replayed"], report["changed"], report["allowed_to_denied"]) == (2, 1, 1)
+    assert report["examples"][0]["project"] == "a"
