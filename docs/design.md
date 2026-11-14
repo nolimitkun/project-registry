@@ -302,7 +302,6 @@ POST   /changes/{id}/approve|reject   (body: {"comment": ...})
 POST   /changes/{id}/withdraw         its author or the platform team, before it is published
 GET    /publications                  published revisions, newest first
 GET    /export                        every record (the format of the seed and the snapshots)
-GET    /internal/keys|mirrors         API key ids, for the Vault bootstrap (cluster-internal)
 GET    /internal/bundles/{bundle}     the active bundle, for policy-replay.py (cluster-internal)
 GET    /metrics                       project_budget_usd, for Prometheus (cluster-internal)
 POST   /rollback/{revision}           platform team only
@@ -383,13 +382,23 @@ generated `policies/gateway-projects/` data, no export pull requests.
   latest snapshot, or on a new cluster the seed,
   `minikube/gitops/project-registry/files/seed.yaml`: the platform's own
   projects. The seed is read only then; it is not kept current.
-- **What reads the records,** from the registry: the Vault bootstrap gets the API
-  key ids from `/internal/keys` and `/internal/mirrors` (cluster-internal); the
-  publisher applies the registered agents to agentregistry after each publish
-  and every hour; `scripts/policy-replay.py` gets the active data bundle from
-  `/internal/bundles/gateway-projects`. A new key id still needs the bootstrap
-  (`SEED_MISSING_ONLY=true`) to create its key, until callers move to OAuth
-  clients.
+- **What reads the records,** from the registry: the publisher writes the
+  gateway's API keys to Vault (below), applies the registered agents to
+  agentregistry after each publish and every hour; `scripts/policy-replay.py`
+  gets the active data bundle from `/internal/bundles/gateway-projects`.
+- **The gateway's API keys** (`registry/keys.py`). The publisher writes two maps
+  in Vault's KV (`GATEWAY_KEYS_MOUNT`), one entry per key id the records list
+  (`gen-projects.py --keys`): `agentgateway-api-keys`, the key and its
+  `{project, key_id}` metadata as agentgateway reads them, and
+  `agentgateway-client-keys`, the raw keys. Nothing else in Vault holds a gateway
+  key: each client's copy (kagent's, an agent's, Open WebUI's, the onboarding
+  pipeline's) is a VSO transformation of the clients' map in the deployment repo
+  that picks a key id and names the field. A new key id gets a random key, a key
+  id no record lists is dropped from both maps (revoked), an existing one keeps
+  its key; the gateway's map is written first, so the gateway knows a key before a
+  client holds it. It runs after each data bundle and every five minutes, which
+  also mends a map edited by hand. Its Vault role may write those two paths and
+  nothing else in the KV mount.
 
 ### Rotating the signing key
 
