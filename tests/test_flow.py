@@ -293,22 +293,26 @@ def test_active_counts_only_ready_opa_pods_and_is_checked_without_a_report(world
         assert activation.activate_due(c, "gateway-projects", {"opa-new"}) == [rev2]
 
 
-def test_internal_reads_for_the_bootstrap_and_the_replay(world):
+def test_internal_reads_for_the_replay_and_the_gateway_keys_from_the_records(world):
     from fastapi.testclient import TestClient
+    from registry import keys
+    from tests.test_keys import FakeKV
     db, store = world["db"], world["store"]
     rev = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     client = TestClient(api.create_app(world["reg"]))
-    keys = client.get("/internal/keys").text.splitlines()
-    assert "admin admin" in keys and "open-webui open-webui" in keys
-    assert any(line.startswith("kagent-k8s-agent ") for line in keys)           # agent keys too
-    mirrors = client.get("/internal/mirrors").text.splitlines()
-    assert mirrors and all(len(line.split()) == 3 for line in mirrors)
     b = client.get("/internal/bundles/gateway-projects")
     assert b.status_code == 200 and b.headers["x-revision"] == rev and b.content[:2] == b"\x1f\x8b"
     assert client.get("/internal/bundles/other").status_code == 404
     via_ingress = {"X-Forwarded-For": "203.0.113.7"}
-    for path in ("/internal/keys", "/internal/mirrors", "/internal/bundles/gateway-projects"):
-        assert client.get(path, headers=via_ingress).status_code == 403
+    assert client.get("/internal/bundles/gateway-projects", headers=via_ingress).status_code == 403
+    with db.tx() as c:
+        records = dbm.resources(c)
+    want = keys.wanted(world["renderer"].lines(records, store.active("gateway-policy"), "--keys"))
+    assert want["admin"] == "admin" and want["open-webui"] == "open-webui"
+    assert want["kagent-k8s-agent"] == "kagent"                                 # agent keys too
+    kv = FakeKV()
+    assert set(keys.reconcile(kv, "m", want)["added"]) == set(want)
+    assert set(kv.data[keys.CLIENTS]) == set(want)
 
 
 def test_a_snapshot_is_what_an_empty_registry_imports(world):

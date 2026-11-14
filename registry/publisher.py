@@ -29,6 +29,7 @@ import yaml
 from psycopg.types.json import Jsonb
 
 from . import activation, catalog, gatewaychart
+from . import keys as keysmod
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .policy import PolicyWatch, same_data
@@ -329,6 +330,29 @@ def main() -> None:
     agentregistry, synced = env.get("AGENTREGISTRY_URL"), 0.0
     charts = gatewaychart.HelmRepo(s3, env["GATEWAY_MODELS_BUCKET"]) if env.get("GATEWAY_MODELS_BUCKET") else None
     charted = None
+    keys_mount, keyed, keyed_at, keys_retry = env.get("GATEWAY_KEYS_MOUNT"), None, 0.0, 0.0
+
+    def gateway_keys() -> None:
+        """The gateway's key maps in Vault (keys.py), after every data bundle and every
+        five minutes (which also mends a map changed in Vault by hand)."""
+        nonlocal keyed, keyed_at, keys_retry
+        if not keys_mount or time.time() < keys_retry:
+            return
+        try:
+            state = (store.active(pub.policy_bundle), store.active(pub.data_bundle))
+            if not all(state) or (state == keyed and time.time() - keyed_at < 300):
+                return                              # before the import: no keys to write yet
+            with db.tx() as c:
+                records = dbm.resources(c)
+            def wrote(name: str, diff: dict) -> None:       # each map as it is written (key ids only)
+                with db.tx() as c:
+                    dbm.audit(c, "publisher", "keys", name, None, diff)
+            keysmod.reconcile(signer.vault, keys_mount, keysmod.wanted(renderer.lines(records, state[0], "--keys")),
+                              wrote=wrote)
+            keyed, keyed_at = state, time.time()
+        except Exception:
+            keys_retry = time.time() + 60                   # Vault down or no permission: once a minute
+            log.exception("writing the gateway's key maps")
 
     def chart() -> None:
         """The gateway-models chart of the active policy commit (gatewaychart.py)."""
@@ -383,6 +407,7 @@ def main() -> None:
         if time.time() - synced >= 3600:
             sync()
         chart()
+        gateway_keys()
         try:
             with db.tx() as c:                      # OPA reports only on changes: check here too
                 activation.activate_due(c, pub.data_bundle, activation.ready_opa_pods(),
