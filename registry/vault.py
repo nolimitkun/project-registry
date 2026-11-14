@@ -1,4 +1,5 @@
-"""Vault: Kubernetes login and Transit signing. The signing key never leaves Vault."""
+"""Vault: Kubernetes login, Transit signing (the signing key never leaves Vault) and the
+KV v2 reads and writes of the gateway's key maps (keys.py)."""
 from __future__ import annotations
 
 import base64
@@ -28,6 +29,21 @@ class Vault:
         r = requests.post(f"{self.addr}/v1/{path}", json=body, headers={"X-Vault-Token": self.token()}, timeout=10)
         r.raise_for_status()
         return r.json()
+
+    def get(self, path: str) -> dict | None:
+        """None for a path that doesn't exist (404)."""
+        r = requests.get(f"{self.addr}/v1/{path}", headers={"X-Vault-Token": self.token()}, timeout=10)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+
+    def kv_get(self, mount: str, name: str) -> dict | None:
+        out = self.get(f"{mount}/data/{name}")
+        return None if out is None else (out.get("data") or {}).get("data") or {}
+
+    def kv_put(self, mount: str, name: str, data: dict) -> None:
+        self.post(f"{mount}/data/{name}", {"data": data})
 
 
 class TransitSigner:

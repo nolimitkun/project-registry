@@ -54,7 +54,7 @@ None of these is a backup of the database (approvals, audit log).
 
 **What other parts of the platform read from here** (cluster-internal, refused through the ingress):
 
-- `/internal/keys` and `/internal/mirrors`: which API key ids exist, for the Vault bootstrap. Ids, not keys.
+- the gateway's API keys: the publisher writes Vault's two key maps from the records, after each data bundle and every five minutes (`GATEWAY_KEYS_MOUNT`, `registry/keys.py`): `agentgateway-api-keys`, which the gateway reads, and `agentgateway-client-keys`, the raw keys every client's copy is a VSO transformation of. A new key id gets a key, a removed one is revoked, an existing one keeps its key.
 - `/internal/bundles/<bundle>`: the active bundle, for `scripts/policy-replay.py`.
 - agentregistry's catalog of registered agents: the publisher applies it after each publish and every hour (`AGENTREGISTRY_URL`).
 - the gateway's model routes: once a policy commit is active, the publisher packages its `charts/gateway-models` with the catalog as values and publishes it to a Helm repository in MinIO (`GATEWAY_MODELS_BUCKET`, `registry/gatewaychart.py`), which Argo CD installs.
