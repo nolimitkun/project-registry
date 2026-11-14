@@ -1,0 +1,228 @@
+{
+ "agent": {
+  "holmes": {
+   "agent": "holmes",
+   "autonomy": "supervised",
+   "description": "Root-cause analysis of alerts and incidents from cluster state, logs, metrics, traces and Argo CD (HolmesGPT).",
+   "keys": [
+    "holmes"
+   ],
+   "mcp_tools": [
+    "grafana_*"
+   ],
+   "models": {
+    "allow": [
+     "deepseek-v4-pro"
+    ]
+   },
+   "owner": "platform team",
+   "project": "holmes",
+   "runtime": {
+    "kind": "holmes",
+    "name": "holmes"
+   },
+   "secret": {
+    "field": "AGENTGATEWAY_API_KEY",
+    "name": "holmes-agentgateway"
+   }
+  },
+  "kagent-helm-agent": {
+   "agent": "kagent-helm-agent",
+   "autonomy": "autonomous",
+   "description": "Lists, installs, upgrades and rolls back Helm releases (kagent's helm-agent).",
+   "keys": [
+    "kagent-helm-agent"
+   ],
+   "models": {
+    "allow": [
+     "deepseek-v4-pro"
+    ]
+   },
+   "owner": "platform team",
+   "project": "kagent",
+   "runtime": {
+    "kind": "kagent",
+    "name": "helm-agent"
+   },
+   "secret": {
+    "field": "OPENAI_API_KEY",
+    "name": "kagent-helm-agent-agentgateway"
+   }
+  },
+  "kagent-k8s-agent": {
+   "agent": "kagent-k8s-agent",
+   "autonomy": "autonomous",
+   "description": "Inspects and changes Kubernetes resources in the cluster on request (kagent's k8s-agent).",
+   "keys": [
+    "kagent-k8s-agent"
+   ],
+   "models": {
+    "allow": [
+     "deepseek-v4-pro"
+    ]
+   },
+   "owner": "platform team",
+   "project": "kagent",
+   "runtime": {
+    "kind": "kagent",
+    "name": "k8s-agent"
+   },
+   "secret": {
+    "field": "OPENAI_API_KEY",
+    "name": "kagent-k8s-agent-agentgateway"
+   }
+  },
+  "kagent-observability-agent": {
+   "agent": "kagent-observability-agent",
+   "autonomy": "read-only",
+   "description": "Answers questions from Prometheus metrics and Grafana dashboards (kagent's observability-agent).",
+   "keys": [
+    "kagent-observability-agent"
+   ],
+   "models": {
+    "allow": [
+     "deepseek-v4-pro"
+    ]
+   },
+   "owner": "platform team",
+   "project": "kagent",
+   "runtime": {
+    "kind": "kagent",
+    "name": "observability-agent"
+   },
+   "secret": {
+    "field": "OPENAI_API_KEY",
+    "name": "kagent-observability-agent-agentgateway"
+   }
+  },
+  "kagent-promql-agent": {
+   "agent": "kagent-promql-agent",
+   "autonomy": "read-only",
+   "description": "Writes PromQL queries from a plain-language question (kagent's promql-agent).",
+   "keys": [
+    "kagent-promql-agent"
+   ],
+   "models": {
+    "allow": [
+     "deepseek-v4-pro"
+    ]
+   },
+   "owner": "platform team",
+   "project": "kagent",
+   "runtime": {
+    "kind": "kagent",
+    "name": "promql-agent"
+   },
+   "secret": {
+    "field": "OPENAI_API_KEY",
+    "name": "kagent-promql-agent-agentgateway"
+   }
+  }
+ },
+ "exception": {
+  "holmes": {
+   "models": [
+    "deepseek-v4-pro"
+   ],
+   "owner": "platform team",
+   "why": "same as kagent: root-cause analysis over cluster state and telemetry"
+  },
+  "kagent": {
+   "models": [
+    "deepseek-v4-pro"
+   ],
+   "owner": "platform team",
+   "why": "multi-step tool calling the single-GPU local model can't carry; cluster state and telemetry only"
+  }
+ },
+ "project": {
+  "admin": {
+   "budget": {
+    "usd_per_30_days": 25
+   },
+   "data_class": "public",
+   "description": "For people testing and operating the gateway by hand.",
+   "keys": [
+    "admin"
+   ],
+   "limits": {
+    "requests_per_minute": 60
+   },
+   "mcp_tools": [
+    "*"
+   ],
+   "owner": "platform team",
+   "project": "admin",
+   "routing": "semantic"
+  },
+  "holmes": {
+   "budget": {
+    "usd_per_30_days": 20
+   },
+   "data_class": "internal",
+   "description": "HolmesGPT root-cause analysis. Its DeepSeek exception is in _exceptions.yaml.",
+   "keys": [],
+   "limits": {
+    "requests_per_minute": 30
+   },
+   "mcp_tools": [
+    "grafana_*"
+   ],
+   "owner": "platform team",
+   "project": "holmes"
+  },
+  "kagent": {
+   "budget": {
+    "usd_per_30_days": 30
+   },
+   "data_class": "internal",
+   "description": "kagent's agents. Its DeepSeek exception is in _exceptions.yaml.",
+   "keys": [
+    "kagent"
+   ],
+   "limits": {
+    "requests_per_minute": 60
+   },
+   "mcp_tools": [
+    "grafana_*",
+    "kagent-tools_*"
+   ],
+   "owner": "platform team",
+   "project": "kagent"
+  },
+  "model-onboarding": {
+   "data_class": "internal",
+   "deployments": true,
+   "description": "The model onboarding pipeline (github.com/nolimitkun/model-onboarding-pipeline). It tunes, evaluates and smoke-tests each model deployment it makes through the gateway, by the deployment's own path, before the catalog names it.",
+   "keys": [
+    "model-onboarding"
+   ],
+   "models": {
+    "allow": [
+     "qwen3.6-27b"
+    ]
+   },
+   "owner": "platform team",
+   "placement": [
+    "onprem"
+   ],
+   "project": "model-onboarding"
+  },
+  "open-webui": {
+   "budget": {
+    "usd_per_30_days": 50
+   },
+   "data_class": "internal",
+   "description": "Open WebUI, the platform's chat front end for people.",
+   "keys": [
+    "open-webui"
+   ],
+   "limits": {
+    "requests_per_minute": 120
+   },
+   "owner": "platform team",
+   "project": "open-webui",
+   "routing": "semantic"
+  }
+ }
+}

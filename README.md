@@ -4,7 +4,7 @@ The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platf
 
 The registry publishes both of the gateway's OPA bundles, and every change to either is a change request with approvals, a replay report, activation tracking and rollback:
 
-- **project data** (`gateway-projects`): projects, their agents and exceptions, kept in Postgres instead of `projects/*.yaml`, changed in the portal or through the API;
+- **project data** (`gateway-projects`): projects, their agents and exceptions. They live only here, in Postgres; Git has their schema and the script that renders them, not a copy. They change in the portal or through the API;
 - **policy** (`gateway-policy`): the Rego, written and reviewed in Git. A new commit on the branch becomes a change request here, and OPA loads it only once it is approved.
 
 A project data change goes like this:
@@ -43,9 +43,22 @@ A commit that changes the data format must work in both mixed states, because ea
 
 Rollback activates an earlier revision. For project data it also restores the records that revision was rendered from; for the policy it activates an earlier commit, which must be signed with the current key. A rollback moves one bundle, so it is refused when the project data it would run with is not what that policy commit renders (a format change between commits); roll back with a revert commit instead, which publishes both. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
 
-A daily job (`python -m registry.gitexport`) writes the records back to the deployment repo through that repo's `scripts/registry-export.py` and opens one pull request (branch `registry-export`), or updates the open one; it needs a fine-grained GitHub token for that repo, read from the environment through a git credential helper so it never appears in a command line.
+**Copies of the records.** Since the records live only here:
 
-`/metrics` exports `project_budget_usd{project}` for the platform's one budget alert rule. `/export` returns every record in the deployment repo's file format; its `scripts/registry-export.py` writes them back to Git.
+- a daily job (`python -m registry.snapshot`) writes them, as `/export` returns them, to `registry-snapshots/` in the bundle store;
+- an empty registry imports the latest snapshot (`python -m registry.importer`), or the chart's seed on a new cluster;
+- the signed data bundles keep every published revision.
+
+None of these is a backup of the database (approvals, audit log).
+
+**What other parts of the platform read from here** (cluster-internal, refused through the ingress):
+
+- `/internal/keys` and `/internal/mirrors`: which API key ids exist, for the Vault bootstrap. Ids, not keys.
+- `/internal/bundles/<bundle>`: the active bundle, for `scripts/policy-replay.py`.
+- agentregistry's catalog of registered agents: the publisher applies it after each publish and every hour (`AGENTREGISTRY_URL`).
+- `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule.
+
+`/export` returns every record (a signed-in user).
 
 **Portal.** The registry serves a page at `/portal/` (one HTML file, `registry/static/portal.html`, same origin as the API) with these views:
 
@@ -77,8 +90,8 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 | `registry/policy.py` | policy commits from Git as change requests: test, build, replay, file |
 | `registry/approvals.py` | who approves: `data.portal.required_approvals` on OPA |
 | `registry/activation.py` | when a published revision is active on every ready OPA pod |
-| `registry/gitexport.py` | the daily export of the records to Git |
-| `registry/importer.py` | the first load from `projects/*.yaml`, with a byte-for-byte check against Git |
+| `registry/snapshot.py` | the daily snapshot of the records into the bundle store |
+| `registry/importer.py` | the first load of an empty registry: the latest snapshot, or the seed |
 | `registry/bundles.py` | build, sign, verify; the versioned bundle store (S3/MinIO) |
 | `registry/render.py` | rendering through the deployment repo's `gen-projects.py` |
 | `registry/replay.py` | decision replay |

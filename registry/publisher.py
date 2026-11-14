@@ -24,6 +24,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import requests
 from psycopg.types.json import Jsonb
 
 from . import activation
@@ -188,6 +189,36 @@ class Publisher:
             self._failed(ids, e, self.data_bundle)
             return None
 
+    # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in
+    AGENTREGISTRY_FILE = "minikube/gitops/agentregistry-catalog/files/agents.yaml"
+
+    def sync_agentregistry(self, url: str | None) -> int | None:
+        """Applies the registered agents to agentregistry's catalog (/v0/apply: idempotent,
+        deletes nothing), as gen-projects.py renders them from the active records. The
+        records live only here, so the registry keeps agentregistry current: after a
+        publish, and every hour. Returns the number of entries applied."""
+        if not url:
+            return None
+        policy_rev = self.store.active(self.policy_bundle)
+        if not policy_rev:
+            return None
+        with self.db.tx() as c:
+            records = dbm.resources(c)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "agents.yaml"
+            self.renderer.render(records, policy_rev, Path(tmp) / "bundle", also={self.AGENTREGISTRY_FILE: out})
+            if not out.exists():
+                return 0
+            body = out.read_bytes()
+        r = requests.post(f"{url.rstrip('/')}/v0/apply", data=body, headers={"content-type": "application/yaml"},
+                          timeout=30)
+        r.raise_for_status()
+        if '"status":"failed"' in r.text.replace(" ", ""):
+            raise RuntimeError(f"agentregistry refused an entry: {r.text[-500:]}")
+        n = r.text.count('"status"')
+        log.info("agentregistry: applied %s agent entries", n)
+        return n
+
     def resign_if_needed(self) -> str | None:
         """After a signing key rotation: publishes the active records again, signed with the
         current key, so OPA pods configured for the new key have a bundle to load. Returns the
@@ -274,6 +305,15 @@ def main() -> None:
     watch = policy_from_env(db, store, signer, renderer, events)
     pub = Publisher(db, store, signer, renderer, events, policy=watch)
     interval, poll = int(env.get("MIN_INTERVAL", "30")), int(env.get("POLICY_POLL", "60"))
+    agentregistry, synced = env.get("AGENTREGISTRY_URL"), 0.0
+
+    def sync() -> None:
+        nonlocal synced
+        synced = time.time()
+        try:
+            pub.sync_agentregistry(agentregistry)
+        except Exception:
+            log.exception("syncing agentregistry's catalog")
     while True:
         try:
             watch.bootstrap()                       # a new cluster: the branch's head, unapproved
@@ -291,6 +331,8 @@ def main() -> None:
                 watch.propose()
             except Exception:
                 log.exception("proposing the policy branch's head")
+        if time.time() - synced >= 3600:
+            sync()
         try:
             with db.tx() as c:                      # OPA reports only on changes: check here too
                 activation.activate_due(c, pub.data_bundle, activation.ready_opa_pods(),
@@ -299,6 +341,7 @@ def main() -> None:
             log.exception("activation check")
         try:
             if pub.publish_once():
+                sync()                              # the agents may have changed
                 time.sleep(interval)
                 continue
         except Exception:

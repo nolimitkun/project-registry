@@ -3,7 +3,7 @@
 The Rego is written and reviewed in Git (pull request, CI). Whether a commit reaches
 OPA is the registry's decision. The publisher watches the branch, and for each new
 commit it:
-  1. runs `opa test` over the commit's policy and project data;
+  1. runs `opa test` over the commit's policy and the registry's records rendered at it;
   2. builds and signs the bundle, kept as a revision in the store, not activated;
   3. renders the registry's records with that commit's gen-projects.py;
   4. replays recent decisions under the active bundles and under the new ones;
@@ -62,10 +62,9 @@ class PolicySource:
     renderer's: the records are rendered with gen-projects.py at the policy's commit, so
     the policy and the data format come from one repository."""
 
-    def __init__(self, ref: str, renderer: Renderer, policy_dir: str = "policies/gateway",
-                 test_dirs: tuple[str, ...] = ("policies/gateway", "policies/gateway-projects"), opa: str = "opa"):
+    def __init__(self, ref: str, renderer: Renderer, policy_dir: str = "policies/gateway", opa: str = "opa"):
         self.repo, self.ref, self.renderer = renderer.repo, ref, renderer
-        self.policy_dir, self.test_dirs, self.opa = policy_dir, test_dirs, opa
+        self.policy_dir, self.opa = policy_dir, opa
 
     def head(self) -> str:
         out = subprocess.run(["git", "ls-remote", self.repo, f"refs/heads/{self.ref}"],
@@ -92,13 +91,19 @@ class PolicySource:
             out[p] = r.stdout.strip() if r.returncode == 0 else None
         return out
 
-    def build(self, sha: str, signer, out: Path) -> None:
-        """Tests the commit and builds its signed policy bundle into out; Rejected if a test fails."""
+    def test(self, sha: str, data: Path) -> None:
+        """opa test over the commit's policy with project data (the registry's records rendered
+        at the commit: Git has no copy of them). Rejected if a test fails."""
         work = self.renderer.checkout(sha)
-        test = subprocess.run([self.opa, "test", *self.test_dirs], cwd=work, capture_output=True, text=True)
+        test = subprocess.run([self.opa, "test", self.policy_dir, str(data)], cwd=work, capture_output=True, text=True)
         if test.returncode != 0:
             raise Rejected(f"opa test failed at {sha[:12]}:\n{(test.stdout + test.stderr)[-3000:]}")
-        build(work / self.policy_dir, sha, signer, out, opa=self.opa)
+
+    def build(self, sha: str, signer, out: Path) -> None:
+        """The commit's signed policy bundle, into out. Not tested here: a commit is tested
+        before it is filed (PolicyWatch.check); a bootstrap or a re-sign builds what is
+        already tested or has nothing to protect."""
+        build(self.renderer.checkout(sha) / self.policy_dir, sha, signer, out, opa=self.opa)
 
 
 def stored_with_key(store: Store, bundle: str, revision: str, keyid: str) -> bool:
@@ -259,18 +264,19 @@ class PolicyWatch:
         it still holds."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            new_policy = self.ensure_built(sha, tmp)
-            old_policy = self.store.fetch(self.policy_bundle, active, tmp / "old-policy.tar.gz")
-            data_rev = self.store.active(self.data_bundle)
-            if not data_rev:
-                raise RuntimeError(f"no active {self.data_bundle} bundle (run the import)")
-            old_data = self.store.fetch(self.data_bundle, data_rev, tmp / "old-data.tar.gz")
             with self.db.tx() as c:
                 records = dbm.resources(c)
             try:
                 new_data = self.renderer.render(records, sha, tmp / "gateway-projects")
             except RenderError as e:
                 raise Rejected(f"the registry's records don't render at {sha[:12]}: {e}") from e
+            self.source.test(sha, new_data)
+            new_policy = self.ensure_built(sha, tmp)
+            old_policy = self.store.fetch(self.policy_bundle, active, tmp / "old-policy.tar.gz")
+            data_rev = self.store.active(self.data_bundle)
+            if not data_rev:
+                raise RuntimeError(f"no active {self.data_bundle} bundle (run the import)")
+            old_data = self.store.fetch(self.data_bundle, data_rev, tmp / "old-data.tar.gz")
             report = {"policy_revision": active, "data_revision": data_rev}
             if (same_bundle(new_policy, old_policy) and same_data(new_data, old_data)
                     and self.source.render_inputs(sha) == self.source.render_inputs(active)):
@@ -303,7 +309,5 @@ def from_env(db: dbm.DB, store: Store, signer, renderer: Renderer, events) -> Po
     env = os.environ
     if env.get("POLICY_REPO") and env["POLICY_REPO"] != renderer.repo:
         raise SystemExit("POLICY_REPO must be DEPLOY_REPO: the policy and the data format come from one repository")
-    source = PolicySource(env.get("POLICY_REF", "main"), renderer,
-                          env.get("POLICY_DIR", "policies/gateway"),
-                          tuple(env.get("POLICY_TEST_DIRS", "policies/gateway,policies/gateway-projects").split(",")))
+    source = PolicySource(env.get("POLICY_REF", "main"), renderer, env.get("POLICY_DIR", "policies/gateway"))
     return PolicyWatch(db, store, signer, renderer, source, events, env["OPA_URL"])

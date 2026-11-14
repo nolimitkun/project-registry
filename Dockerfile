@@ -1,8 +1,8 @@
 # One image, four commands:
 #   uvicorn registry.api:app --host 0.0.0.0 --port 8080   the registry API
 #   python -m registry.publisher                          files policy commits as changes, publishes approved changes
-#   python -m registry.gitexport                          daily export of the records to Git
-#   python -m registry.importer --owner-group G           first load from projects/*.yaml
+#   python -m registry.snapshot                           daily snapshot of the records
+#   python -m registry.importer --owner-group G --seed F  first load: latest snapshot, else the seed
 FROM openpolicyagent/opa:1.22.2-static AS opa
 
 FROM python:3.12-slim

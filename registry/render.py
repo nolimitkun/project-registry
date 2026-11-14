@@ -4,8 +4,8 @@ platform's own scripts/gen-projects.py, at the commit of the active policy bundl
 One validation library: the schema, the rules across files and the output format
 stay in the deployment repository, reviewed with the Rego and the catalog. The
 registry writes its records as the project, agent and exception files that script
-reads, runs it, and takes policies/gateway-projects. The output therefore matches
-what the same records would produce from Git, byte for byte.
+reads, runs it, and takes policies/gateway-projects. The records themselves live
+only in the registry; Git keeps the schema and the script, not a copy of them.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
@@ -39,13 +40,15 @@ class Renderer:
             tmp.rename(path)
         return path
 
-    def render(self, records: dict[str, dict[str, dict]], revision: str, out: Path) -> Path:
-        """records: {"project": {id: spec}, "agent": {...}, "exception": {project: entry}}.
-        Writes the bundle directory to out; raises RenderError with the script's findings."""
+    @contextmanager
+    def prepared(self, records: dict[str, dict[str, dict]], revision: str):
+        """A copy of the repo at revision with the records written as the files gen-projects.py
+        reads (projects/<id>.yaml, agents/<id>.yaml, projects/_exceptions.yaml)."""
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp) / "repo"
             shutil.copytree(self.checkout(revision), work, ignore=shutil.ignore_patterns(".git"))
             for folder in ("projects", "agents"):
+                (work / folder).mkdir(exist_ok=True)
                 for f in (work / folder).glob("*.yaml"):
                     f.unlink()
             for pid, spec in records["project"].items():
@@ -55,24 +58,33 @@ class Renderer:
             if records["exception"]:
                 (work / "projects" / "_exceptions.yaml").write_text(
                     yaml.safe_dump({"exceptions": records["exception"]}, sort_keys=False))
-            run = subprocess.run([sys.executable, "scripts/gen-projects.py"], cwd=work, capture_output=True, text=True)
-            if run.returncode != 0:
-                errors = [l.strip() for l in (run.stderr or run.stdout).splitlines() if l.strip()]
-                raise RenderError(errors or ["gen-projects.py failed"])
+            yield work
+
+    @staticmethod
+    def _gen(work: Path, *args: str) -> str:
+        run = subprocess.run([sys.executable, "scripts/gen-projects.py", *args], cwd=work,
+                             capture_output=True, text=True)
+        if run.returncode != 0:
+            errors = [l.strip() for l in (run.stderr or run.stdout).splitlines() if l.strip()]
+            raise RenderError(errors or ["gen-projects.py failed"])
+        return run.stdout
+
+    def render(self, records: dict[str, dict[str, dict]], revision: str, out: Path,
+               also: dict[str, Path] | None = None) -> Path:
+        """records: {"project": {id: spec}, "agent": {...}, "exception": {project: entry}}.
+        Writes the bundle directory to out; raises RenderError with the script's findings.
+        also: {path in the repo: destination}, other generated files to keep."""
+        with self.prepared(records, revision) as work:
+            self._gen(work)
             if out.exists():
                 shutil.rmtree(out)
             shutil.copytree(work / "policies" / "gateway-projects", out)
+            for src, dst in (also or {}).items():
+                if (work / src).exists():
+                    shutil.copyfile(work / src, dst)
         return out
 
-
-def import_git(checkout: Path) -> dict[str, dict[str, dict]]:
-    """Records from a deployment repo checkout (projects/, agents/), for the first import."""
-    records: dict[str, dict[str, dict]] = {"project": {}, "agent": {}, "exception": {}}
-    for f in sorted((checkout / "projects").glob("*.yaml")):
-        if f.name == "_exceptions.yaml":
-            records["exception"] = (yaml.safe_load(f.read_text()) or {}).get("exceptions") or {}
-        else:
-            records["project"][f.stem] = yaml.safe_load(f.read_text())
-    for f in sorted((checkout / "agents").glob("*.yaml")):
-        records["agent"][f.stem] = yaml.safe_load(f.read_text())
-    return records
+    def lines(self, records: dict[str, dict[str, dict]], revision: str, flag: str) -> str:
+        """gen-projects.py --keys or --mirrors over the records."""
+        with self.prepared(records, revision) as work:
+            return self._gen(work, flag)
