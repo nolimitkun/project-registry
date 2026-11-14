@@ -51,7 +51,10 @@ def project_of(event: dict) -> str | None:
 
 
 def evaluate(inputs: list[dict], bundles: list[Path], opa: str = "opa") -> list[dict]:
-    query = f"[d | some x in data.replay; d := data.{RULE.replace('/', '.')} with input as x]"
+    """One decision per input, in order. An undefined decision (a candidate policy without a
+    default, say) counts as a denial, so the results stay aligned with the inputs."""
+    query = (f"[ds | some x in data.replay; "
+             f"ds := [d | d := data.{RULE.replace('/', '.')} with input as x]]")
     with tempfile.TemporaryDirectory() as tmp:
         replay = Path(tmp) / "replay.json"
         replay.write_text(json.dumps({"replay": inputs}))
@@ -61,7 +64,10 @@ def evaluate(inputs: list[dict], bundles: list[Path], opa: str = "opa") -> list[
         out = subprocess.run(args + [query], capture_output=True, text=True)
     if out.returncode != 0:
         raise RuntimeError(f"opa eval failed: {out.stdout[-2000:]}{out.stderr[-2000:]}")
-    return json.loads(out.stdout)["result"][0]["expressions"][0]["value"]
+    results = json.loads(out.stdout)["result"][0]["expressions"][0]["value"]
+    if len(results) != len(inputs):
+        raise RuntimeError(f"opa eval returned {len(results)} results for {len(inputs)} inputs")
+    return [ds[0] if ds else {"allowed": False, "undefined": True} for ds in results]
 
 
 def flips(events: list[dict], before: list[dict], after: list[dict]) -> list[dict]:

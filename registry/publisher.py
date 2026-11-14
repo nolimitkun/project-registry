@@ -99,10 +99,17 @@ class Publisher:
                     self.policy.record(c, sha, ch["id"])
                     dbm.audit(c, "publisher", "publish", f"{self.policy_bundle}@{sha}", None,
                               {"changes": ids, "records": data})
-                    # last, data first: once activated OPA may load them, so nothing may fail after
+                    # last, data first: once activated OPA may load them, so nothing may fail after.
+                    # If the policy's activation fails, the data goes back to what was active.
+                    previous = self.store.active(self.data_bundle)
                     if data:
                         self.store.activate(self.data_bundle, data)
-                    self.store.activate(self.policy_bundle, sha)
+                    try:
+                        self.store.activate(self.policy_bundle, sha)
+                    except Exception:
+                        if data and previous:
+                            self.store.activate(self.data_bundle, previous)
+                        raise
             log.info("published policy %s (change %s)%s", sha, ch["id"], f" with records {data}" if data else "")
             return sha
         except Exception as e:

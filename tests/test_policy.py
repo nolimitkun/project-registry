@@ -163,17 +163,56 @@ def test_a_commit_is_proposed_approved_published_and_activated(world):
     report(reg, "opa-1", sha, data)
     assert state(db, cid)["state"] == "active"
 
-    # rollback to the first commit: active again, the change rolled back, the head not re-proposed
+    # the data format changed with it: rolling back the policy alone would mismatch, so it's refused
+    with pytest.raises(HTTPException) as e:
+        reg.rollback(BOB, first)
+    assert e.value.status_code == 409 and "renders differently" in e.value.detail
+    assert store.active("gateway-policy") == sha
+
+
+def approve_and_publish(world, sha):
+    cid = world["watch"].propose()
+    world["reg"].decide(BOB, cid, "approve", None)
+    assert world["pub"].publish_once() == sha
+    return cid
+
+
+def test_rollback_and_forward_of_a_policy_with_the_same_data_format(world):
+    db, store, watch, reg, first = (world[k] for k in ("db", "store", "watch", "reg", "first"))
+    data = store.active("gateway-projects")
+    sha = commit(world["repo"], "rules only", rule='data.projects[input.p].on; input.p != "z"')
+    cid = approve_and_publish(world, sha)
+    assert store.active("gateway-projects") == data               # same records: not republished
     with pytest.raises(HTTPException):
         reg.rollback(User("x", {"security-reviewers"}), first)
     assert reg.rollback(BOB, first) == {"active": first, "rolled_back": [sha]}
     assert store.active("gateway-policy") == first and state(db, cid)["state"] == "rolled_back"
-    assert watch.propose() is None
-    # and forward again: one active publication
+    assert watch.propose() is None                                # the head isn't proposed again
     assert reg.rollback(BOB, sha) == {"active": sha, "rolled_back": []}
     with db.tx() as c:
         assert [r["revision"] for r in c.execute(
             "select revision from policy_publication where state = 'active'")] == [sha]
+
+
+def test_a_failed_policy_activation_puts_the_data_back(world, monkeypatch):
+    db, store, first = world["db"], world["store"], world["first"]
+    data = store.active("gateway-projects")
+    sha = commit(world["repo"], "new format", fmt=3)
+    cid = world["watch"].propose()
+    world["reg"].decide(BOB, cid, "approve", None)
+    activate = store.activate
+
+    def flaky(bundle, revision):
+        if bundle == "gateway-policy":
+            raise RuntimeError("store unavailable")
+        activate(bundle, revision)
+
+    monkeypatch.setattr(store, "activate", flaky)
+    assert world["pub"].publish_once() is None
+    assert store.active("gateway-policy") == first and store.active("gateway-projects") == data
+    assert state(db, cid)["state"] == "failed" and sha
+    with db.tx() as c:
+        assert c.execute("select revision from publication where state = 'active'").fetchone()["revision"] == data
 
 
 def test_a_newer_commit_supersedes_and_a_failing_test_publishes_nothing(world):

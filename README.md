@@ -41,7 +41,7 @@ The approvers see the commit, a link to its diff and how many decisions would ch
 
 A newer commit supersedes a policy change still waiting. A commit whose test fails, or under which the records don't render, is filed as `failed` and nothing is published. On a store with no policy at all (a new cluster), the branch's head is published without a change.
 
-Rollback activates an earlier revision. For project data it also restores the records that revision was rendered from; for the policy it activates an earlier commit, which must be signed with the current key. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
+Rollback activates an earlier revision. For project data it also restores the records that revision was rendered from; for the policy it activates an earlier commit, which must be signed with the current key. A rollback moves one bundle, so it is refused when the project data it would run with is not what that policy commit renders (a format change between commits); roll back with a revert commit instead, which publishes both. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
 
 A daily job (`python -m registry.gitexport`) writes the records back to the deployment repo through that repo's `scripts/registry-export.py` and opens one pull request (branch `registry-export`), or updates the open one; it needs a fine-grained GitHub token for that repo, read from the environment through a git credential helper so it never appears in a command line.
 

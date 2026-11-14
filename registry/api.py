@@ -26,6 +26,7 @@ from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
 from . import bundles
 from .bundles import Store
+from .policy import same_data
 from .render import Renderer, RenderError
 
 KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception"}
@@ -210,6 +211,9 @@ class Registry:
                 raise HTTPException(404, "no such revision")
             later = c.execute("select revision, change_ids from publication where seq > %s and state <> 'rolled_back'",
                               (pub["seq"],)).fetchall()
+            policy_rev = self.store.active(self.policy_bundle)
+            if pub["policy_revision"] != policy_rev:
+                self._data_fits(c, policy_rev, records=pub["records"], bundle=revision)
             c.execute("delete from resource")
             for kind, items in pub["records"].items():
                 for oid, spec in items.items():
@@ -227,6 +231,18 @@ class Registry:
             self.store.activate(self.data_bundle, revision)      # last, as in the publisher
             return {"active": revision, "rolled_back": [p["revision"] for p in later]}
 
+    def _data_fits(self, c, policy_rev: str, records: dict | None = None, bundle: str | None = None) -> None:
+        """A rollback activates one bundle only. Refuse it (409) when the project data it would
+        run with is not what the policy commit renders: the format may have changed between
+        commits. records/bundle: those of a data rollback; by default, the active ones."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rendered = self.renderer.render(records if records is not None else dbm.resources(c), policy_rev,
+                                            Path(tmp) / "render")
+            bundle = bundle or self.store.active(self.data_bundle)
+            if not same_data(rendered, self.store.fetch(self.data_bundle, bundle, Path(tmp) / "data.tar.gz")):
+                raise HTTPException(409, f"the project data renders differently at policy {policy_rev[:12]}: "
+                                         "roll back with a new commit (a revert), which republishes both")
+
     def _rollback_policy(self, c, user: User, revision: str) -> dict:
         """An earlier policy commit, as it was signed. The branch's head isn't proposed again
         (it has its change); the next commit is, a revert for instance."""
@@ -237,6 +253,7 @@ class Registry:
             keyid = bundles.signed_keyid(self.store.fetch(self.policy_bundle, revision, Path(tmp) / "b.tar.gz"))
         if keyid != self.signing_keyid:
             raise HTTPException(409, f"{revision} is signed with {keyid}, which OPA no longer accepts")
+        self._data_fits(c, revision)
         later = c.execute("select revision, change_id from policy_publication where seq > %s and state <> 'rolled_back'",
                           (pub["seq"],)).fetchall()
         for p in later:
