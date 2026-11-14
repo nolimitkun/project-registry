@@ -55,7 +55,8 @@ create sequence if not exists bundle_seq;
 -- the states, as a named constraint so a new state is one migration
 alter table change_request drop constraint if exists change_request_state_check;
 alter table change_request add constraint change_request_state_check check (state in (
-  'pending_approval', 'approved', 'publishing', 'active', 'rejected', 'withdrawn', 'failed', 'rolled_back'));
+  'pending_approval', 'approved', 'publishing', 'active', 'rejected', 'withdrawn', 'failed', 'rolled_back',
+  'skipped'));
 """
 
 

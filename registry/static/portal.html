@@ -29,7 +29,7 @@
   tr.clickable { cursor: pointer; } tr.clickable:hover { background: var(--chip); }
   .chip { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--chip); font-size: 12px; margin: 1px 2px 1px 0; }
   .state-active { color: var(--ok); } .state-pending_approval, .state-approved, .state-publishing { color: var(--warn); }
-  .state-failed, .state-rejected { color: var(--bad); } .state-withdrawn, .state-rolled_back, .state-superseded { color: var(--muted); }
+  .state-failed, .state-rejected { color: var(--bad); } .state-withdrawn, .state-rolled_back, .state-superseded, .state-skipped { color: var(--muted); }
   pre { background: var(--chip); padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; margin: 6px 0; }
   textarea { width: 100%; min-height: 160px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
   input[type=text] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
@@ -251,7 +251,9 @@ async function viewChange(cid) {
       diff.length ? el("table", {}, el("thead", {}, el("tr", {}, ["Field", "Before", "After"].map((h) => el("th", {}, h)))), el("tbody", {}, diff)) : el("p", { class: "muted" }, "Nothing (whole record created or removed)."),
       el("details", {}, el("summary", {}, "Whole records"), el("div", { class: "grid2" }, el("pre", {}, json(c.before)), el("pre", {}, json(c.after))))),
     c.replay_report ? el("section", { class: "panel" }, el("h2", {}, "Replay before publishing"),
-      c.replay_report.kind === "policy"
+      c.replay_report.unchanged
+        ? el("p", {}, "Neither bundle changes at this commit: nothing to approve, and OPA keeps the active policy.")
+        : c.replay_report.kind === "policy"
         ? el("p", {}, `${c.replay_report.replayed} recent decisions replayed under the new policy: ${c.replay_report.changed} would change (allowed → denied: ${c.replay_report.allowed_to_denied}; denied → allowed: ${c.replay_report.denied_to_allowed}).` + (c.replay_report.records_change ? " The project data renders differently at this commit and is published with it." : ""))
         : el("p", {}, `${c.replay_report.replayed} decisions replayed; changed for this change's projects: ${c.replay_report.changed_for_changed_projects}; for other projects: ${c.replay_report.changed_for_other_projects}.`),
       (c.replay_report.examples || []).length ? el("table", {}, el("thead", {}, el("tr", {}, ["Project", "Path", "Model", "Before", "After"].map((h) => el("th", {}, h)))),

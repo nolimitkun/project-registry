@@ -13,7 +13,9 @@ platform team at least (approvals.py). Once approved, the publisher activates th
 records rendered at that commit (if they differ from the active ones), then the
 policy; the change is active once every ready OPA pod reports the commit.
 
-A newer commit supersedes an open policy change. A commit whose test fails, or
+A commit under which neither bundle changes (docs, other charts) is recorded as
+`skipped`, with no approval: OPA keeps the active commit. A newer commit
+supersedes an open policy change. A commit whose test fails, or
 under which the records don't render, becomes a failed change, shown in the
 portal, and nothing is published. On a store with no policy at all (a new
 cluster), the branch's head is published without a change: there is nothing to
@@ -87,6 +89,24 @@ def stored_with_key(store: Store, bundle: str, revision: str, keyid: str) -> boo
         except Exception:
             return False
         return signed_keyid(path) == keyid
+
+
+def same_bundle(a: Path, b: Path) -> bool:
+    """Whether two built bundles hold the same files, apart from the revision in .manifest
+    and the signature."""
+    def files(path: Path) -> dict:
+        out = {}
+        with tarfile.open(path) as tar:
+            for m in tar.getmembers():
+                if not m.isfile() or Path(m.name).name == ".signatures.json":
+                    continue
+                body = tar.extractfile(m).read()
+                if Path(m.name).name == ".manifest":
+                    body = json.dumps({k: v for k, v in json.loads(body).items() if k != "revision"},
+                                      sort_keys=True).encode()
+                out[m.name.lstrip("/")] = body
+        return out
+    return files(a) == files(b)
 
 
 def same_data(directory: Path, bundle: Path) -> bool:
@@ -189,10 +209,12 @@ class PolicyWatch:
             error = None
         except Rejected as e:
             report, error = None, str(e)
-        required = [] if error else approvals.required(self.opa_url, change, ACTOR)
+        skipped = bool(report and report.get("unchanged"))
+        state = "failed" if error else "skipped" if skipped else "pending_approval"
+        required = [] if error or skipped else approvals.required(self.opa_url, change, ACTOR)
         with self.db.tx() as c:
-            # a failed commit supersedes nothing: the open change is still a good candidate
-            for old in [] if error else c.execute("""select id from change_request where kind = 'policy'
+            # a failed or skipped commit supersedes nothing: the open change is still the candidate
+            for old in [] if error or skipped else c.execute("""select id from change_request where kind = 'policy'
                                     and state in ('pending_approval', 'approved') for update""").fetchall():
                 if c.execute("select 1 from outbox where change_id = %s and published_at is not null",
                              (old["id"],)).fetchone():
@@ -204,10 +226,12 @@ class PolicyWatch:
             row = c.execute("""insert into change_request (kind, object_id, op, before, after, state,
                                    required_approvals, replay_report, error, created_by)
                                values ('policy', %s, 'update', %s, %s, %s, %s, %s, %s, %s) returning id""",
-                            (sha, Jsonb(before), Jsonb(info), "failed" if error else "pending_approval",
+                            (sha, Jsonb(before), Jsonb(info), state,
                              Jsonb(required), Jsonb(report) if report else None, error, ACTOR)).fetchone()
-            dbm.audit(c, ACTOR, "change_failed" if error else "change_update", f"policy/{sha}", before, info)
-        log.info("policy change %s for %s: %s", row["id"], sha, error or "pending approval")
+            dbm.audit(c, ACTOR, {"failed": "change_failed", "skipped": "change_skipped"}.get(state, "change_update"),
+                      f"policy/{sha}", before, info)
+        log.info("policy change %s for %s: %s", row["id"], sha,
+                 error or ("skipped: the bundles don't change" if skipped else "pending approval"))
         return row["id"]
 
     def check(self, sha: str, active: str) -> dict:
@@ -228,8 +252,10 @@ class PolicyWatch:
                 new_data = self.renderer.render(records, sha, tmp / "gateway-projects")
             except RenderError as e:
                 raise Rejected(f"the registry's records don't render at {sha[:12]}: {e}") from e
-            events = self.events()
             report = {"policy_revision": active, "data_revision": data_rev}
+            if same_bundle(new_policy, old_policy) and same_data(new_data, old_data):
+                return report | {"unchanged": True}     # nothing OPA loads would change
+            events = self.events()
             report |= replay_all(events, [old_policy, old_data], [new_policy, new_data], self.opa)
             report["records_change"] = not same_data(new_data, old_data)
             if report["records_change"]:

@@ -217,7 +217,7 @@ def test_a_failed_policy_activation_puts_the_data_back(world, monkeypatch):
 
 def test_a_newer_commit_supersedes_and_a_failing_test_publishes_nothing(world):
     db, store, watch, reg, first = (world[k] for k in ("db", "store", "watch", "reg", "first"))
-    commit(world["repo"], "one")
+    commit(world["repo"], "one", rule='data.projects[input.p].on; input.p != "y"')
     old = watch.propose()
     assert reg.decide(BOB, old, "approve", None)["state"] == "approved"
     bad = commit(world["repo"], "breaks its test", rule="false")
@@ -225,7 +225,7 @@ def test_a_newer_commit_supersedes_and_a_failing_test_publishes_nothing(world):
     assert state(db, failed)["state"] == "failed" and "opa test failed" in state(db, failed)["error"]
     assert state(db, old)["state"] == "approved"                 # a failed commit supersedes nothing
     assert watch.propose() is None and store.active("gateway-policy") == first
-    good = commit(world["repo"], "fixed")
+    good = commit(world["repo"], "fixed", rule='data.projects[input.p].on; input.p != "x"')
     new = watch.propose()
     assert state(db, old) == {"state": "withdrawn", "error": f"superseded by {good[:12]}"}
     assert state(db, new)["state"] == "pending_approval" and bad != good
@@ -353,3 +353,22 @@ def test_a_replay_that_changes_after_the_approval_goes_back_to_the_approvers(wor
                          (cid,)).fetchone()["replay_report"]["allowed_to_denied"] == 1
     world["reg"].decide(BOB, cid, "approve", "seen the flip")
     assert world["pub"].publish_once() == sha and state(db, cid) == {"state": "publishing", "error": None}
+
+
+def test_a_commit_that_changes_neither_bundle_is_skipped(world):
+    db, store, watch, first = world["db"], world["store"], world["watch"], world["first"]
+    (world["repo"] / "README.md").write_text("docs only\n")
+    docs = commit(world["repo"], "docs only")
+    cid = watch.propose()
+    with db.tx() as c:
+        ch = c.execute("select * from change_request where id = %s", (cid,)).fetchone()
+    assert (ch["state"], ch["required_approvals"], ch["object_id"]) == ("skipped", [], docs)
+    assert ch["replay_report"]["unchanged"] is True
+    assert store.active("gateway-policy") == first and watch.propose() is None
+    # a real change after it is compared with the active commit, and filed
+    sha = commit(world["repo"], "rules", rule='data.projects[input.p].on; input.p != "z"')
+    cid2 = watch.propose()
+    with db.tx() as c:
+        ch2 = c.execute("select * from change_request where id = %s", (cid2,)).fetchone()
+    assert ch2["state"] == "pending_approval" and ch2["before"] == {"commit": first} and ch2["object_id"] == sha
+    assert state(db, cid)["state"] == "skipped"                  # not superseded: it was never open
