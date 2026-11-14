@@ -5,6 +5,7 @@ The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platf
 The registry publishes both of the gateway's OPA bundles, and every change to either is a change request with approvals, a replay report, activation tracking and rollback:
 
 - **project data** (`gateway-projects`): projects, their agents and exceptions. They live only here, in Postgres; Git has their schema and the script that renders them, not a copy. They change in the portal or through the API;
+- **the catalog**: every model (placement, provider, price), Google API and MCP tool (risk), and the catalog's settings (task classes, serving namespaces, MCP targets), as records like a project's (`/models`, `/google-apis`, `/tools`, `/catalog/settings`). They render with the policy repo's `gen-catalog.py` into the data bundle (`data.registry.catalog`) and into the gateway's routes (`registry/gatewaychart.py`). The platform team proposes them; `portal.rego` adds security and the cost owner where a change widens placement or tool risk, or changes a price. The first time, the registry adopts the active policy commit's catalog files (`registry/catalog.py`). A catalog change may change any project's decisions, so its replay is a report, as for a policy change;
 - **policy** (`gateway-policy`): the Rego, written and reviewed in Git ([nolimitkun/gateway-policy](https://github.com/nolimitkun/gateway-policy)). A new commit on the branch becomes a change request here, and OPA loads it only once it is approved.
 
 A project data change goes like this:
@@ -91,6 +92,7 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 | `registry/policy.py` | policy commits from Git as change requests: test, build, replay, file |
 | `registry/approvals.py` | who approves: `data.portal.required_approvals` on OPA |
 | `registry/activation.py` | when a published revision is active on every ready OPA pod |
+| `registry/catalog.py` | the catalog's records: adopted the first time from the policy commit's files |
 | `registry/gatewaychart.py` | the gateway-models chart, published as a Helm repository in MinIO |
 | `registry/snapshot.py` | the daily snapshot of the records into the bundle store |
 | `registry/importer.py` | the first load of an empty registry: the latest snapshot, or the seed |

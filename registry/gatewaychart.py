@@ -28,6 +28,7 @@ log = logging.getLogger("gatewaychart")
 CHART = "charts/gateway-models"
 CATALOG = "generated/agentgateway-catalog.yaml"
 POLICY_ANNOTATION = "project-registry/policy-revision"
+CATALOG_ANNOTATION = "project-registry/catalog-digest"
 
 
 class HelmRepo:
@@ -84,17 +85,39 @@ class HelmRepo:
         return version
 
 
-def ensure(repo: HelmRepo, renderer, policy_rev: str) -> str | None:
-    """Publishes the chart of the active policy commit, unless the newest version is it.
-    Returns the new version, or None (already published, or a commit without the chart)."""
-    newest = repo.newest()
-    if newest and (newest.get("annotations") or {}).get(POLICY_ANNOTATION) == policy_rev:
-        return None
+def catalog_values(renderer, policy_rev: str, records: dict | None) -> dict | None:
+    """The chart's catalog value: the registry's catalog records rendered at the policy commit
+    (gen-catalog.py), or, without such records, the commit's own generated file."""
+    import tempfile
     work = renderer.checkout(policy_rev)
-    if not (work / CHART / "Chart.yaml").exists() or not (work / CATALOG).exists():
+    if records and any(records.get(k) for k in ("model", "google_api", "tool", "catalog")):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "catalog.yaml"
+            renderer.render(records, policy_rev, Path(tmp) / "bundle", also={CATALOG: out})
+            if out.exists():
+                return (yaml.safe_load(out.read_text()) or {}).get("catalog") or {}
+    if (work / CATALOG).exists():
+        return (yaml.safe_load((work / CATALOG).read_text()) or {}).get("catalog") or {}
+    return None
+
+
+def ensure(repo: HelmRepo, renderer, policy_rev: str, records: dict | None = None) -> str | None:
+    """Publishes the chart of the active policy commit with the catalog (the registry's
+    records, rendered), unless the newest version is that already. Returns the new version,
+    or None (already published, or a commit without the chart)."""
+    work = renderer.checkout(policy_rev)
+    if not (work / CHART / "Chart.yaml").exists():
         log.info("policy %s has no %s: no gateway-models chart", policy_rev[:12], CHART)
         return None
-    catalog = (yaml.safe_load((work / CATALOG).read_text()) or {}).get("catalog") or {}
-    version = repo.publish(work / CHART, {"catalog": catalog}, policy_rev[:12], {POLICY_ANNOTATION: policy_rev})
+    catalog = catalog_values(renderer, policy_rev, records)
+    if catalog is None:
+        return None
+    digest = hashlib.sha256(yaml.safe_dump(catalog, sort_keys=True).encode()).hexdigest()[:16]
+    newest = repo.newest()
+    annotations = (newest or {}).get("annotations") or {}
+    if annotations.get(POLICY_ANNOTATION) == policy_rev and annotations.get(CATALOG_ANNOTATION) == digest:
+        return None
+    version = repo.publish(work / CHART, {"catalog": catalog}, policy_rev[:12],
+                           {POLICY_ANNOTATION: policy_rev, CATALOG_ANNOTATION: digest})
     log.info("published gateway-models %s for policy %s", version, policy_rev[:12])
     return version

@@ -60,3 +60,13 @@ def test_a_policy_commit_without_the_chart_publishes_nothing(tmp_path):
     policy_commit(tmp_path, "c" * 40, ["m1"], with_chart=False)
     assert gatewaychart.ensure(gatewaychart.HelmRepo(s3, "gateway-models"), renderer, "c" * 40) is None
     assert "index.yaml" not in s3.objects
+
+
+def test_a_chart_published_without_a_catalog_digest_is_republished(tmp_path):
+    s3, renderer = FakeS3(), Checkouts(tmp_path)
+    repo = gatewaychart.HelmRepo(s3, "gateway-models")
+    policy_commit(tmp_path, "d" * 40, ["m1"])
+    chart = tmp_path / ("d" * 40) / "charts" / "gateway-models"
+    repo.publish(chart, {"catalog": {}}, "d" * 12, {gatewaychart.POLICY_ANNOTATION: "d" * 40})   # before the digest
+    assert gatewaychart.ensure(repo, renderer, "d" * 40) == "1.0.2"
+    assert gatewaychart.ensure(repo, renderer, "d" * 40) is None

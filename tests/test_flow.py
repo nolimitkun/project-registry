@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 
@@ -51,6 +52,12 @@ def world(tmp_path, monkeypatch):
     store.activate("gateway-policy", policy_rev)
     signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "opa-bundles")
     renderer = render.Renderer(REPO, tmp_path / "checkouts")
+    work = renderer.checkout(policy_rev)
+    catalog_seeded = not (work / "catalog" / "models.yaml").exists()
+    if catalog_seeded:          # the catalog lives in the registry: a seed carries it, like the deployment's
+        fixture = yaml.safe_load((work / "fixtures" / "records.yaml").read_text())
+        for kind in dbm.CATALOG_KINDS:
+            monkeypatch.setitem(SEED, kind, fixture.get(kind) or {})
     roles = {"value": ["project_owner"], "may_submit": True, "asked": []}
 
     class Resp:
@@ -72,7 +79,7 @@ def world(tmp_path, monkeypatch):
     pub = publisher.Publisher(db, store, signer, renderer, lambda: [], opa=OPA)
     monkeypatch.setattr(publisher, "replay", lambda *a: {"ok": True, "replayed": 0})
     return {"db": db, "store": store, "signer": signer, "renderer": renderer, "reg": reg, "pub": pub,
-            "roles": roles, "s3": s3}
+            "roles": roles, "s3": s3, "catalog_seeded": catalog_seeded}
 
 
 def test_import_from_the_seed_then_a_change_goes_through_approval_publish_and_activation(world):
@@ -414,3 +421,45 @@ def test_concurrent_agent_proposals_share_one_wiring_refresh(world, tmp_path):
     with ThreadPoolExecutor(8) as pool:
         results = list(pool.map(lambda _: wiring.env(), range(16)))
     assert all(Path(r["KAGENT_VALUES"]).exists() for r in results)
+
+
+def test_the_catalog_is_adopted_then_changed_by_request_into_the_data_bundle(world):
+    import json
+    import tarfile
+    import tempfile
+    from registry import catalog, gatewaychart
+    db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
+    rev = store.active("gateway-policy")
+    assert catalog.adopt(db, world["renderer"], rev) == 0                    # not before the import:
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    with db.tx() as c:                                                        # it would have skipped the seed
+        assert c.execute("select 1 from resource where kind = 'project' limit 1").fetchone()
+    n = catalog.adopt(db, world["renderer"], rev)
+    if world["catalog_seeded"]:                                               # the seed had it: nothing to adopt
+        assert n == 0
+    else:
+        assert n > 0 and catalog.adopt(db, world["renderer"], rev) == 0      # once
+    with db.tx() as c:
+        model = c.execute("select spec from resource where kind = 'model' and id = 'gemini-3.5-flash'").fetchone()["spec"]
+    roles["value"] = ["cost_owner", "platform"]
+    with pytest.raises(HTTPException) as e:                                   # gen-catalog.py validates it
+        reg.submit(ALICE, "model", "gemini-3.5-flash", "update", api.ChangeIn(spec={"placement": "moon"}))
+    assert e.value.status_code == 422 and "placement" in str(e.value.detail)
+    ch = reg.submit(ALICE, "model", "gemini-3.5-flash", "update", api.ChangeIn(spec={"price": {"input": 9, "output": 9}}))
+    assert ch["after"]["price"] == {"input": 9, "output": 9} and ch["before"] == model
+    reg.decide(BOB, ch["id"], "approve", None)
+    reg.decide(COST, ch["id"], "approve", None)
+    data = pub.publish_once()
+    assert data and store.active("gateway-projects") == data
+    with tempfile.TemporaryDirectory() as tmp:
+        with tarfile.open(store.fetch("gateway-projects", data, Path(tmp) / "b.tar.gz")) as tar:
+            merged = json.loads(tar.extractfile(next(m for m in tar.getmembers() if m.name.endswith("data.json"))).read())
+    if "registry" not in merged:          # the policy repo before its step 1 (no data.registry.catalog)
+        pytest.skip("the policy repo's gen-catalog.py doesn't write the registry's catalog yet")
+    assert merged["registry"]["catalog"]["models"]["gemini-3.5-flash"]["price"] == {"input": 9, "output": 9}
+    # the gateway's chart values come from the records too
+    with db.tx() as c:
+        records = dbm.resources(c)
+    records["google_api"]["speech"] = {**records["google_api"]["speech"], "host": "elsewhere.googleapis.com"}
+    values = gatewaychart.catalog_values(world["renderer"], rev, records)
+    assert values["googleApis"]["speech"]["host"] == "elsewhere.googleapis.com"
