@@ -380,3 +380,26 @@ def test_agentregistry_from_a_policy_commit_of_the_deployment_repo(world, monkey
     monkeypatch.setattr(publisher.requests, "post", lambda url, data=None, headers=None, timeout=None:
                         sent.append(data) or Resp())
     assert pub.sync_agentregistry("http://agentregistry:12121") == 1 and b"kagent-k8s-agent" in sent[0]
+
+
+def test_a_proposed_kagent_agent_is_checked_against_the_deployment_repos_wiring(world, tmp_path):
+    from registry import render as rmod
+    db, reg = world["db"], world["reg"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    world["roles"]["value"] = ["project_owner"]
+    unwired = api.ChangeIn(spec={"secret": {"name": "not-in-kagent-resources", "field": "OPENAI_API_KEY"}})
+    assert reg.submit(ALICE, "agent", "kagent-k8s-agent", "update", unwired)["state"] == "pending_approval"
+    with db.tx() as c:                                    # no wiring check configured: accepted
+        c.execute("update change_request set state = 'withdrawn'")
+    reg.kagent_wiring = rmod.KagentWiring(os.environ.get("KAGENT_WIRING_REPO",
+                                                         "https://github.com/nolimitkun/mini-platform-deployment.git"),
+                                          "main", tmp_path)
+    with pytest.raises(HTTPException) as e:
+        reg.submit(ALICE, "agent", "kagent-k8s-agent", "update", unwired)
+    assert e.value.status_code == 422 and "vaultSecrets" in str(e.value.detail)
+    # a change that keeps the agent wired passes the check
+    assert reg.submit(ALICE, "agent", "kagent-k8s-agent", "update",
+                      api.ChangeIn(spec={"owner": "platform on-call"}))["state"] == "pending_approval"
+    # a project change doesn't depend on the wiring
+    assert reg.submit(ALICE, "project", "admin", "update",
+                      api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))["state"] == "pending_approval"
