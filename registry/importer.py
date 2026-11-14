@@ -1,71 +1,80 @@
-"""First load: records from projects/*.yaml and agents/*.yaml, then the first
-signed gateway-projects bundle (migration steps 2 to 4 of the design).
+"""First load of an empty registry, then its first signed gateway-projects bundle.
 
-    python -m registry.importer --owner-group platform-admins
+    python -m registry.importer --owner-group project-owners --seed /seed/seed.yaml
 
-Reads the deployment repo at the active policy revision, imports its records
-(once: does nothing if the registry has any, so it can run on every sync), renders them with gen-projects.py and
-compares the result with the commit's policies/gateway-projects byte for byte
-(the shadow check). Only if they match does it publish and activate.
+The records come from the registry's latest snapshot in the bundle store
+(snapshot.py: a registry that lost its database), or else from the seed (a new
+cluster: the platform's own projects, a file of the project-registry chart). Both
+have the format of GET /export: {"project": {id: spec}, "agent": {...},
+"exception": {...}}. Does nothing once the registry has records, so it can run on
+every sync. Waits for an active policy bundle, which the publisher publishes first.
 """
 from __future__ import annotations
 
 import argparse
-import filecmp
+import json
 import os
 import tempfile
 from pathlib import Path
 
+import yaml
 from psycopg.types.json import Jsonb
 
 from . import db as dbm
 from .bundles import build
-from .render import import_git
+
+KINDS = ("project", "agent", "exception")
 
 
-def differences(a: Path, b: Path) -> list[str]:
-    out = []
-    cmp = filecmp.dircmp(a, b)
-    out += [f"only in registry render: {x}" for x in cmp.left_only]
-    out += [f"only in Git: {x}" for x in cmp.right_only]
-    out += [f"differs: {x}" for x in filecmp.cmpfiles(a, b, cmp.common_files, shallow=False)[1]]
-    for sub in cmp.common_dirs:
-        out += [f"{sub}/{d}" for d in differences(a / sub, b / sub)]
-    return out
+def records_from(seed: Path | None, snapshot: bytes | None) -> tuple[dict, str]:
+    doc = json.loads(snapshot) if snapshot else None
+    if doc and doc.get("project"):        # a snapshot without projects is no recovery point
+        source = "snapshot"
+    elif seed:
+        doc, source = yaml.safe_load(seed.read_text()) or {}, f"seed {seed.name}"
+    else:
+        raise SystemExit("no snapshot in the store and no --seed: nothing to import")
+    return {k: doc.get(k) or {} for k in KINDS}, source
 
 
-def run(db: dbm.DB, store, signer, renderer, owner_group: str, data_bundle="gateway-projects",
-        policy_bundle="gateway-policy", opa="opa") -> str:
+def skip_used_revisions(c, store, data_bundle: str) -> None:
+    """A new database starts bundle_seq over, but the store keeps every revision it had: move
+    the sequence past them, so no published revision is written over."""
+    used = [int(r.split("-", 1)[1]) for r in store.revisions(data_bundle)
+            if r.startswith("projects-") and r.split("-", 1)[1].isdigit()]
+    row = c.execute("select last_value, is_called from bundle_seq").fetchone()
+    current = row["last_value"] if row["is_called"] else row["last_value"] - 1
+    if used and max(used) > current:
+        c.execute("select setval('bundle_seq', %s)", (max(used),))
+
+
+def run(db: dbm.DB, store, signer, renderer, owner_group: str, records: dict, source: str,
+        data_bundle="gateway-projects", policy_bundle="gateway-policy", opa="opa") -> str:
     policy_rev = store.active(policy_bundle)
     if not policy_rev:
-        raise SystemExit(f"no active {policy_bundle}: the publisher publishes the policy first (it bootstraps an empty store)")
-    checkout = renderer.checkout(policy_rev)
-    records = import_git(checkout)
+        raise SystemExit(f"no active {policy_bundle} yet (the publisher publishes it first): retrying")
     with db.tx() as c, tempfile.TemporaryDirectory() as tmp:
         if c.execute("select 1 from resource limit 1").fetchone():
             print("the registry already has records: nothing to import")
             return store.active(data_bundle)
-        for kind, items in records.items():
-            for oid, spec in items.items():
+        for kind in KINDS:
+            for oid, spec in records[kind].items():
                 c.execute("insert into resource (kind, id, spec) values (%s, %s, %s)", (kind, oid, Jsonb(spec)))
         for pid in records["project"]:
-            c.execute("insert into project_owner values (%s, %s)", (pid, owner_group))
+            c.execute("insert into project_owner values (%s, %s) on conflict do nothing", (pid, owner_group))
         rendered = renderer.render(dbm.resources(c), policy_rev, Path(tmp) / "gateway-projects")
-        diff = differences(rendered, checkout / "policies" / "gateway-projects")
-        if diff:
-            raise SystemExit("shadow check failed, nothing imported:\n  " + "\n  ".join(diff))
+        skip_used_revisions(c, store, data_bundle)
         seq = c.execute("select nextval('bundle_seq') as n").fetchone()["n"]
         revision = f"projects-{seq:08d}"
         out = Path(tmp) / "bundle.tar.gz"
         build(rendered, revision, signer, out, opa=opa)
         store.put_revision(data_bundle, revision, out)
+        c.execute("update publication set state = 'superseded' where state = 'active'")
         c.execute("""insert into publication (revision, seq, change_ids, state, policy_revision, records)
                      values (%s, %s, '{}', 'active', %s, %s)""", (revision, seq, policy_rev, Jsonb(records)))
-        dbm.audit(c, "importer", "import", f"git@{policy_rev}", None,
-                  {k: sorted(v) for k, v in records.items()})
+        dbm.audit(c, "importer", "import", source, None, {k: sorted(v) for k, v in records.items()})
         store.activate(data_bundle, revision)
-    print(f"imported {', '.join(f'{len(v)} {k}s' for k, v in records.items())} from {policy_rev}; "
-          f"render matches Git; activated {revision}")
+    print(f"imported {', '.join(f'{len(v)} {k}s' for k, v in records.items())} from {source}; activated {revision}")
     return revision
 
 
@@ -78,15 +87,23 @@ def main() -> None:
 
     p = argparse.ArgumentParser()
     p.add_argument("--owner-group", required=True, help="Keycloak group approving as owner of every imported project")
+    p.add_argument("--seed", type=Path, help="the seed file, for a new cluster")
     a = p.parse_args()
     env = os.environ
     db = dbm.DB(env["DATABASE_URL"])
     db.migrate()
     s3 = boto3.client("s3", endpoint_url=env["S3_ENDPOINT"], region_name=env.get("AWS_REGION", "us-east-1"))
-    run(db, Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", "")),
+    store = Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", ""))
+    with db.tx() as c:
+        if c.execute("select 1 from resource limit 1").fetchone():
+            print("the registry already has records: nothing to import")
+            return
+    records, source = records_from(a.seed, store.latest_snapshot())
+    run(db, store,
         TransitSigner(Vault(env["VAULT_ADDR"], env["VAULT_ROLE"]), env["TRANSIT_KEY"], env["SIGNING_KEYID"],
                       version=int(env["SIGNING_KEY_VERSION"]) if env.get("SIGNING_KEY_VERSION") else None),
-        Renderer(env["DEPLOY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts"), a.owner_group)
+        Renderer(env["DEPLOY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts"), a.owner_group,
+        records, source)
 
 
 if __name__ == "__main__":

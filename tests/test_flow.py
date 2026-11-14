@@ -3,6 +3,7 @@
 Needs TEST_DATABASE_URL (a disposable database) and, optionally, DEPLOY_REPO
 (default: the public deployment repo) and DEPLOY_REVISION (default: its main).
 """
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -16,6 +17,8 @@ from registry.auth import User
 from tests.test_bundles import OPA, FakeS3
 
 DSN = os.environ.get("TEST_DATABASE_URL")
+# The platform's own projects, as the project-registry chart seeds a new cluster with
+SEED = json.loads((Path(__file__).parent / "fixtures" / "seed.json").read_text())
 REPO = os.environ.get("DEPLOY_REPO", "https://github.com/nolimitkun/mini-platform-deployment.git")
 pytestmark = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 
@@ -72,9 +75,9 @@ def world(tmp_path, monkeypatch):
             "roles": roles, "s3": s3}
 
 
-def test_import_matches_git_then_a_change_goes_through_approval_publish_and_activation(world):
+def test_import_from_the_seed_then_a_change_goes_through_approval_publish_and_activation(world):
     db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
-    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     assert store.active("gateway-projects") == first
 
     # a limit raise needs the owner and the cost owner (as the Rego would answer)
@@ -127,7 +130,7 @@ def test_import_matches_git_then_a_change_goes_through_approval_publish_and_acti
 
 def test_invalid_changes_are_refused_before_approval(world):
     db, reg = world["db"], world["reg"]
-    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     with pytest.raises(HTTPException) as e:          # a model the catalog doesn't have
         reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"models": {"allow": ["no-such-model"]}}))
     assert e.value.status_code == 422 and "matches no catalog model" in str(e.value.detail)
@@ -138,7 +141,7 @@ def test_invalid_changes_are_refused_before_approval(world):
 
 def test_a_failed_replay_publishes_nothing(world, monkeypatch):
     db, store, reg, pub = world["db"], world["store"], world["reg"], world["pub"]
-    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
     reg.decide(BOB, ch["id"], "approve", None)
     stopped = {"ok": False, "replayed": 3, "changed_for_other_projects": 2, "changed_for_changed_projects": 0,
@@ -155,7 +158,7 @@ def test_a_failed_replay_publishes_nothing(world, monkeypatch):
 
 def test_submit_rights_come_from_policy(world):
     db, reg, roles = world["db"], world["reg"], world["roles"]
-    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     roles["may_submit"] = False
     with pytest.raises(HTTPException) as e:
         reg.submit(SEC, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
@@ -174,7 +177,7 @@ def test_submit_rights_come_from_policy(world):
 def test_metrics_and_export(world, monkeypatch):
     from fastapi.testclient import TestClient
     db = world["db"]
-    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     app = api.create_app(world["reg"])
     app.dependency_overrides[api.current_user] = lambda: ALICE
     client = TestClient(app)
@@ -188,7 +191,7 @@ def test_metrics_and_export(world, monkeypatch):
 
 def test_a_key_change_re_signs_the_active_records(world):
     db, store, pub = world["db"], world["store"], world["pub"]
-    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     assert pub.resign_if_needed() is None                     # same key: nothing to do
     pub.signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048),
                                         "opa-bundles-v2")
@@ -206,7 +209,7 @@ def test_a_key_change_re_signs_the_active_records(world):
 
 def test_a_change_nobody_can_approve_can_be_withdrawn(world):
     db, reg, pub = world["db"], world["reg"], world["pub"]
-    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
     with pytest.raises(HTTPException) as e:
         reg.withdraw(SEC, ch["id"], None)                       # neither author nor platform team
@@ -229,7 +232,7 @@ def test_portal_change_list_and_internal_only_endpoints(world, monkeypatch):
     from fastapi.testclient import TestClient
     monkeypatch.setenv("KEYCLOAK_ISSUER", "http://keycloak.test/realms/mini-platform")
     db, reg = world["db"], world["reg"]
-    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
     reg.decide(BOB, ch["id"], "approve", "fine")
     app = api.create_app(reg)
@@ -256,7 +259,7 @@ def test_portal_change_list_and_internal_only_endpoints(world, monkeypatch):
 def test_active_counts_only_ready_opa_pods_and_is_checked_without_a_report(world):
     from registry import activation
     db, reg, pub, store = world["db"], world["reg"], world["pub"], world["store"]
-    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", opa=OPA)
+    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     report = lambda iid, pod, rev: {"labels": {"id": iid, "pod": pod}, "bundles": {"gateway-projects": {"active_revision": rev}}}
     reg.opa_pods = lambda: {"opa-old"}
     reg.status(report("i-old", "opa-old", first))                # the pod about to be replaced
@@ -281,3 +284,72 @@ def test_active_counts_only_ready_opa_pods_and_is_checked_without_a_report(world
     with db.tx() as c:
         assert activation.activate_due(c, "gateway-projects", {"opa-new", "opa-third"}) == []
         assert activation.activate_due(c, "gateway-projects", {"opa-new"}) == [rev2]
+
+
+def test_internal_reads_for_the_bootstrap_and_the_replay(world):
+    from fastapi.testclient import TestClient
+    db, store = world["db"], world["store"]
+    rev = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    client = TestClient(api.create_app(world["reg"]))
+    keys = client.get("/internal/keys").text.splitlines()
+    assert "admin admin" in keys and "open-webui open-webui" in keys
+    assert any(line.startswith("kagent-k8s-agent ") for line in keys)           # agent keys too
+    mirrors = client.get("/internal/mirrors").text.splitlines()
+    assert mirrors and all(len(line.split()) == 3 for line in mirrors)
+    b = client.get("/internal/bundles/gateway-projects")
+    assert b.status_code == 200 and b.headers["x-revision"] == rev and b.content[:2] == b"\x1f\x8b"
+    assert client.get("/internal/bundles/other").status_code == 404
+    via_ingress = {"X-Forwarded-For": "203.0.113.7"}
+    for path in ("/internal/keys", "/internal/mirrors", "/internal/bundles/gateway-projects"):
+        assert client.get(path, headers=via_ingress).status_code == 403
+
+
+def test_a_snapshot_is_what_an_empty_registry_imports(world):
+    from registry import snapshot
+    db, store = world["db"], world["store"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    with db.tx() as c:
+        c.execute("update resource set spec = jsonb_set(spec, '{owner}', '\"changed\"') "
+                  "where kind = 'project' and id = 'admin'")
+    snapshot.run(db, store)
+    records, source = importer.records_from(None, store.latest_snapshot())
+    assert source == "snapshot" and records["project"]["admin"]["owner"] == "changed"
+    before = set(store.revisions("gateway-projects"))
+    with db.tx() as c:                                     # the database is lost: a new one
+        c.execute("drop schema public cascade; create schema public")
+    db.migrate()
+    assert snapshot.run(db, store) is None                 # empty: latest.json stays the recovery point
+    records, source = importer.records_from(None, store.latest_snapshot())
+    assert source == "snapshot"
+    rev = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", records, source, opa=OPA)
+    assert rev not in before                               # bundle_seq moved past the kept revisions
+    with db.tx() as c:
+        assert c.execute("select spec from resource where kind='project' and id='admin'").fetchone()["spec"]["owner"] \
+            == "changed"
+    seed, source = importer.records_from(Path(__file__).parent / "fixtures" / "seed.json", None)
+    assert source == "seed seed.json" and set(seed["project"]) == set(SEED["project"])
+
+
+def test_the_registry_keeps_agentregistry_current(world, monkeypatch):
+    db, store, pub = world["db"], world["store"], world["pub"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    sent = []
+
+    class Resp:
+        text = '{"results":[{"status":"created"},{"status":"updated"}]}'
+
+        def raise_for_status(self):
+            pass
+
+    def post(url, data=None, headers=None, timeout=None):
+        sent.append((url, data))
+        return Resp()
+
+    monkeypatch.setattr(publisher.requests, "post", post)
+    assert pub.sync_agentregistry(None) is None
+    assert pub.sync_agentregistry("http://agentregistry:12121") == 2
+    url, body = sent[0]
+    assert url == "http://agentregistry:12121/v0/apply" and b"kagent-k8s-agent" in body
+    import yaml
+    docs = list(yaml.safe_load_all(body))
+    assert len(docs) == 5 and all(d and d.get("apiVersion") for d in docs)   # no comment-only document

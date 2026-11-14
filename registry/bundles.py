@@ -164,6 +164,39 @@ class Store:
             raise
         return json.loads(obj["Body"].read())["revision"]
 
+    def revisions(self, bundle: str) -> list[str]:
+        """Every revision kept for the bundle."""
+        prefix = self._key(bundle, "revisions") + "/"
+        out, token = [], None
+        while True:
+            kw = {"Bucket": self.bucket, "Prefix": prefix, "Delimiter": "/"}
+            if token:
+                kw["ContinuationToken"] = token
+            page = self.s3.list_objects_v2(**kw)
+            out += [p["Prefix"][len(prefix):].rstrip("/") for p in page.get("CommonPrefixes") or []]
+            if not page.get("IsTruncated"):
+                return out
+            token = page["NextContinuationToken"]
+
+    # --- the registry's own snapshots (snapshot.py), next to the bundles ---
+    SNAPSHOTS = "registry-snapshots"
+
+    def put_snapshot(self, name: str, body: bytes) -> str:
+        key = f"{self.prefix}{self.SNAPSHOTS}/{name}"
+        self.s3.put_object(Bucket=self.bucket, Key=key, Body=body, ContentType="application/json")
+        return key
+
+    def latest_snapshot(self) -> bytes | None:
+        try:
+            obj = self.s3.get_object(Bucket=self.bucket, Key=f"{self.prefix}{self.SNAPSHOTS}/latest.json")
+        except self.s3.exceptions.NoSuchKey:
+            return None
+        except Exception as e:
+            if "NoSuchKey" in str(e) or "404" in str(e):
+                return None
+            raise
+        return obj["Body"].read()
+
     def fetch(self, bundle: str, revision: str, path: Path) -> Path:
         self.s3.download_file(self.bucket, self._key(bundle, "revisions", revision, "bundle.tar.gz"), str(path))
         return path

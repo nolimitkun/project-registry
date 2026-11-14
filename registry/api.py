@@ -17,7 +17,7 @@ from pathlib import Path
 
 import requests
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
@@ -356,8 +356,8 @@ def create_app(reg: Registry) -> FastAPI:
 
     @app.get("/export")
     def export(user: User = Depends(current_user)):
-        """Every record, in the deployment repo's file format: projects/<id>.yaml, agents/<id>.yaml
-        and projects/_exceptions.yaml (scripts/registry-export.py writes them to Git)."""
+        """Every record: {"project": {id: spec}, "agent": {...}, "exception": {...}}, each spec in
+        the format of the deployment repo's schemas (the format of the seed and the snapshots)."""
         with reg.db.tx() as c:
             records = dbm.resources(c)
             active = c.execute("select revision from publication where state = 'active' "
@@ -392,6 +392,42 @@ def create_app(reg: Registry) -> FastAPI:
     @app.post("/rollback/{revision}")
     def rollback(revision: str, user: User = Depends(current_user)):
         return reg.rollback(user, revision)
+
+    # --- cluster-internal reads, no user token (the records live only here) ---
+    def key_lines(flag: str) -> str:
+        with reg.db.tx() as c:
+            records = dbm.resources(c)
+        policy_rev = reg.store.active(reg.policy_bundle)
+        if not policy_rev:
+            raise HTTPException(503, "no active policy bundle")
+        try:
+            return reg.renderer.lines(records, policy_rev, flag)
+        except RenderError as e:
+            raise HTTPException(500, {"errors": e.errors}) from e
+
+    @app.get("/internal/keys", response_class=PlainTextResponse, dependencies=[Depends(internal_only)])
+    def internal_keys():
+        """One "<key_id> <project>" line per API key (gen-projects.py --keys): which keys the
+        Vault bootstrap creates (scripts/bootstrap-vault-secrets.sh). Ids, not keys."""
+        return key_lines("--keys")
+
+    @app.get("/internal/mirrors", response_class=PlainTextResponse, dependencies=[Depends(internal_only)])
+    def internal_mirrors():
+        """One "<secret> <field> <key_id>" line per agent whose runtime reads its key from a
+        secret of its own (gen-projects.py --mirrors), for the same bootstrap."""
+        return key_lines("--mirrors")
+
+    @app.get("/internal/bundles/{bundle}", dependencies=[Depends(internal_only)])
+    def internal_bundle(bundle: str):
+        """The active bundle, as OPA loads it (scripts/policy-replay.py)."""
+        if bundle not in (reg.policy_bundle, reg.data_bundle):
+            raise HTTPException(404)
+        rev = reg.store.active(bundle)
+        if not rev:
+            raise HTTPException(404, f"no active {bundle}")
+        with tempfile.TemporaryDirectory() as tmp:
+            body = reg.store.fetch(bundle, rev, Path(tmp) / "b.tar.gz").read_bytes()
+        return Response(body, media_type="application/gzip", headers={"X-Revision": rev})
 
     # OPA's status plugin posts here; cluster-internal, no user token
     @app.post("/opa/status", dependencies=[Depends(internal_only)])
