@@ -479,3 +479,21 @@ def test_publisher_outputs_report_their_health_on_metrics(world):
     assert ok and abs(float(ok[0].split()[-1]) - t.time()) < 60
     assert 'registry_output_last_failure_timestamp_seconds{output="keys"}' in body
     assert 'registry_output_last_success_timestamp_seconds{output="keys"}' not in body
+
+
+def test_a_signing_failure_fails_the_change_and_reaches_health(world, monkeypatch):
+    from registry.health import Health
+    db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 61}}))
+    reg.decide(BOB, ch["id"], "approve", None)
+
+    def vault_refuses(*a, **k):
+        raise RuntimeError("Vault: permission denied")
+    monkeypatch.setattr(world["signer"], "sign", vault_refuses)
+    h = Health(db, write_every=0)
+    assert h.run("data", pub.publish_once) is None
+    with db.tx() as c:
+        assert c.execute("select state from change_request where id = %s", (ch["id"],)).fetchone()["state"] == "failed"
+        row = c.execute("select last_success, last_error from publisher_health where output = 'data'").fetchone()
+    assert row["last_success"] is None and "permission denied" in row["last_error"]

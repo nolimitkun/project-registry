@@ -33,8 +33,8 @@ from . import keys as keysmod
 from .health import Health
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
-from .policy import PolicyWatch, same_data
-from .render import Renderer, renderer_from_env
+from .policy import PolicyWatch, Rejected, same_data
+from .render import Renderer, RenderError, renderer_from_env
 from .replay import fetch, replay
 
 log = logging.getLogger("publisher")
@@ -45,6 +45,12 @@ class ReplayStopped(Exception):
         super().__init__(f"replay: decisions changed for {report['changed_for_other_projects']} "
                          "requests of projects the change does not touch")
         self.report = report
+
+
+# A change that fails for what it is (its records don't render, the replay stops it, a
+# recheck refuses it) is the change's failure. Anything else (signing, the store, Vault)
+# is the publisher's: the change is failed all the same, and the error goes on to health.py.
+CHANGE_FAULTS = (ReplayStopped, RenderError, Rejected)
 
 
 class Everyone(set):
@@ -132,6 +138,8 @@ class Publisher:
             if not ids:
                 raise
             self._failed(ids, e, self.policy_bundle)
+            if not isinstance(e, CHANGE_FAULTS):
+                raise                                       # the publisher's own failure: health sees it
             return None
 
     def _still_checked(self, c, ch: dict) -> bool:
@@ -200,6 +208,8 @@ class Publisher:
             if not ids:
                 raise
             self._failed(ids, e, self.data_bundle)
+            if not isinstance(e, CHANGE_FAULTS):
+                raise                                       # the publisher's own failure: health sees it
             return None
 
     # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in: in
