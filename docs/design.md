@@ -310,7 +310,7 @@ POST   /changes/{id}/withdraw         its author or the platform team, before it
 GET    /publications                  published revisions, newest first
 GET    /export                        every record (the format of the seed and the snapshots)
 GET    /internal/bundles/{bundle}     the active bundle, for policy-replay.py (cluster-internal)
-GET    /metrics                       project_budget_usd, for Prometheus (cluster-internal)
+GET    /metrics                       project_budget_usd and each publisher output's health, for Prometheus (cluster-internal)
 POST   /rollback/{revision}           platform team only
 POST   /opa/status                    OPA's status reports (cluster-internal)
 GET    /healthz

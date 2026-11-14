@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
-from . import activation, approvals
+from . import activation, approvals, health
 from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
 from . import bundles
@@ -380,16 +380,18 @@ def create_app(reg: Registry) -> FastAPI:
     @app.get("/metrics", response_class=PlainTextResponse, dependencies=[Depends(internal_only)])
     def metrics():
         """Prometheus: each project's budget (USD per 30 days), for one alert rule over all
-        projects; cluster-internal, no user token."""
+        projects, and how each publisher output is doing (health.py); cluster-internal, no
+        user token."""
         with reg.db.tx() as c:
             rows = c.execute("select id, spec from resource where kind = 'project' order by id").fetchall()
+            outputs = health.metrics(c)
         lines = ["# HELP project_budget_usd A project's spend cap in USD per 30-day window.",
                  "# TYPE project_budget_usd gauge"]
         for r in rows:
             usd = (r["spec"].get("budget") or {}).get("usd_per_30_days")
             if usd is not None:
                 lines.append(f'project_budget_usd{{project="{r["id"]}"}} {float(usd)}')
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines + outputs) + "\n"
 
     @app.get("/publications")
     def publications(user: User = Depends(current_user)):

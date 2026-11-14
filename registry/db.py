@@ -52,6 +52,9 @@ create table if not exists audit_log (
   seq bigserial primary key, at timestamptz not null default now(),
   actor text not null, action text not null, object text not null, before jsonb, after jsonb);
 create sequence if not exists bundle_seq;
+-- how each publisher output is doing (health.py), for /metrics
+create table if not exists publisher_health (
+  output text primary key, last_success timestamptz, last_failure timestamptz, last_error text);
 -- the record kinds: a project's records, and the catalog's (models, Google APIs, MCP
 -- tools, and its settings), as a named constraint so a new kind is one migration
 alter table resource drop constraint if exists resource_kind_check;

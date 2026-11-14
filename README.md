@@ -58,7 +58,7 @@ None of these is a backup of the database (approvals, audit log).
 - `/internal/bundles/<bundle>`: the active bundle, for `scripts/policy-replay.py`.
 - agentregistry's catalog of registered agents: the publisher applies it after each publish and every hour (`AGENTREGISTRY_URL`).
 - the gateway's model routes: once a policy commit is active, the publisher packages its `charts/gateway-models` with the catalog as values and publishes it to a Helm repository in MinIO (`GATEWAY_MODELS_BUCKET`, `registry/gatewaychart.py`), which Argo CD installs.
-- `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule.
+- `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule, and `registry_output_last_success_timestamp_seconds{output}` / `..._last_failure_...` for each of the publisher's outputs (`data`, `policy`, `chart`, `keys`, `activation`, `agentregistry`; `registry/health.py`), so one that keeps failing alerts rather than only logging.
 
 `/export` returns every record (a signed-in user).
 
@@ -93,6 +93,7 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 | `registry/approvals.py` | who approves: `data.portal.required_approvals` on OPA |
 | `registry/activation.py` | when a published revision is active on every ready OPA pod |
 | `registry/gatewaychart.py` | the gateway-models chart, published as a Helm repository in MinIO |
+| `registry/health.py` | each publisher output's last success and failure, for `/metrics` |
 | `registry/keys.py` | the gateway's API key maps in Vault, written from the records |
 | `registry/vault.py` | Vault: Kubernetes login, Transit signing, KV reads and writes |
 | `registry/snapshot.py` | the daily snapshot of the records into the bundle store |
