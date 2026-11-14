@@ -262,10 +262,11 @@ they differ, then the policy. If either bundle moved while the change waited,
 it is checked again first: an unsafe result fails it, and an outcome the
 approvers didn't see sends it back to them. A newer commit supersedes a
 change still waiting, and a commit whose test fails is filed as `failed`.
-A commit under which neither bundle changes (docs, another chart: the same
-policy files, the same rendered records, and the same `gen-projects.py` and
-the files it reads) is recorded as `skipped`, with no approval; OPA keeps
-the active commit.
+A commit that changes only inert files (docs, CI, tools no publish runs) and
+neither bundle is recorded as `skipped`, with no approval; OPA keeps the active
+commit. Every other file is presumed to matter: the renderers, the schemas and the
+gateway-models chart act through the active commit, so a change to them must become
+active even when today's bundles come out the same.
 Before merging, `scripts/policy-replay.py` gives the replay from a checkout.
 
 **Order of operations:**

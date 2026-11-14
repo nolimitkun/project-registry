@@ -28,7 +28,7 @@ import requests
 import yaml
 from psycopg.types.json import Jsonb
 
-from . import activation, catalog, gatewaychart
+from . import activation, gatewaychart
 from . import keys as keysmod
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
@@ -399,11 +399,6 @@ def main() -> None:
                 watch.propose()
             except Exception:
                 log.exception("proposing the policy branch's head")
-            try:                                    # the catalog's records, the first time
-                if store.active(pub.policy_bundle):
-                    catalog.adopt(db, renderer, store.active(pub.policy_bundle))
-            except Exception:
-                log.exception("adopting the policy's catalog")
         if time.time() - synced >= 3600:
             sync()
         chart()
