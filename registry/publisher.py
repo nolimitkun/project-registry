@@ -28,7 +28,7 @@ import requests
 import yaml
 from psycopg.types.json import Jsonb
 
-from . import activation
+from . import activation, gatewaychart
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .policy import PolicyWatch, same_data
@@ -316,6 +316,25 @@ def main() -> None:
     pub = Publisher(db, store, signer, renderer, events, policy=watch)
     interval, poll = int(env.get("MIN_INTERVAL", "30")), int(env.get("POLICY_POLL", "60"))
     agentregistry, synced = env.get("AGENTREGISTRY_URL"), 0.0
+    charts = gatewaychart.HelmRepo(s3, env["GATEWAY_MODELS_BUCKET"]) if env.get("GATEWAY_MODELS_BUCKET") else None
+    charted = None
+
+    def chart() -> None:
+        """The gateway-models chart of the active policy commit (gatewaychart.py)."""
+        nonlocal charted
+        if not charts:
+            return
+        try:
+            active = store.active(pub.policy_bundle)       # MinIO may be down: log, try next round
+            if not active or active == charted:
+                return
+            version = gatewaychart.ensure(charts, renderer, active)
+            if version:
+                with db.tx() as c:
+                    dbm.audit(c, "publisher", "publish", f"gateway-models@{version}", None, {"policy": active})
+            charted = active
+        except Exception:
+            log.exception("publishing the gateway-models chart")
 
     def sync() -> None:
         nonlocal synced
@@ -343,6 +362,7 @@ def main() -> None:
                 log.exception("proposing the policy branch's head")
         if time.time() - synced >= 3600:
             sync()
+        chart()
         try:
             with db.tx() as c:                      # OPA reports only on changes: check here too
                 activation.activate_due(c, pub.data_bundle, activation.ready_opa_pods(),
