@@ -344,10 +344,11 @@ def main() -> None:
                 return                              # before the import: no keys to write yet
             with db.tx() as c:
                 records = dbm.resources(c)
-            written = keysmod.reconcile(signer.vault, keys_mount, keysmod.wanted(renderer.lines(records, state[0], "--keys")))
-            if written:
+            def wrote(name: str, diff: dict) -> None:       # each map as it is written (key ids only)
                 with db.tx() as c:
-                    dbm.audit(c, "publisher", "keys", keysmod.GATEWAY, None, written)
+                    dbm.audit(c, "publisher", "keys", name, None, diff)
+            keysmod.reconcile(signer.vault, keys_mount, keysmod.wanted(renderer.lines(records, state[0], "--keys")),
+                              wrote=wrote)
             keyed, keyed_at = state, time.time()
         except Exception:
             keys_retry = time.time() + 60                   # Vault down or no permission: once a minute

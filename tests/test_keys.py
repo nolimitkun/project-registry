@@ -79,3 +79,22 @@ def test_no_key_ids_never_empties_the_maps():
 
 def test_wanted_reads_gen_projects_key_lines():
     assert keys.wanted("admin admin\nkagent-k8s-agent kagent\n\n") == {"admin": "admin", "kagent-k8s-agent": "kagent"}
+
+
+def test_each_map_write_is_reported_even_if_the_next_one_fails():
+    kv = FakeKV()
+    keys.reconcile(kv, "m", {"admin": "admin", "gone": "admin"}, new_key=counter())
+
+    class FailClients(FakeKV):
+        def kv_put(self, mount, name, data):
+            if name == keys.CLIENTS:
+                raise RuntimeError("vault down")
+            super().kv_put(mount, name, data)
+    failing, seen = FailClients(kv.data), []
+    with pytest.raises(RuntimeError):
+        keys.reconcile(failing, "m", {"admin": "admin"}, new_key=counter(), wrote=lambda n, d: seen.append((n, d)))
+    assert seen == [(keys.GATEWAY, {"added": [], "removed": ["gone"], "changed": []})]   # the revocation is recorded
+    seen.clear()
+    keys.reconcile(FakeKV(failing.data), "m", {"admin": "admin"}, new_key=counter(),
+                   wrote=lambda n, d: seen.append((n, d)))
+    assert seen == [(keys.CLIENTS, {"added": [], "removed": ["gone"], "changed": []})]   # then the clients' map

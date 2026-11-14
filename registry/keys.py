@@ -44,9 +44,12 @@ def _key(value) -> str | None:
         return None
 
 
-def reconcile(kv, mount: str, want: dict[str, str], new_key=lambda: secrets.token_urlsafe(32)) -> dict | None:
-    """Brings both maps to `want`. Returns {"added", "removed", "changed"} (key ids, never
-    keys) when it wrote, None when both were current already."""
+def reconcile(kv, mount: str, want: dict[str, str], new_key=lambda: secrets.token_urlsafe(32),
+              wrote=lambda name, diff: None) -> dict | None:
+    """Brings both maps to `want`. Calls wrote(map name, diff) after each map it writes,
+    so a write is recorded even if the next one fails; returns the gateway map's diff
+    {"added", "removed", "changed"} (key ids, never keys) when it wrote anything, None
+    when both were current already."""
     if not want:
         raise ValueError("no key ids: refusing to empty the gateway's key maps")
     gateway, clients = kv.kv_get(mount, GATEWAY) or {}, kv.kv_get(mount, CLIENTS) or {}
@@ -55,16 +58,23 @@ def reconcile(kv, mount: str, want: dict[str, str], new_key=lambda: secrets.toke
     new_gateway = {k: json.dumps({"key": keys[k], "metadata": {"project": p, "key_id": k}}, separators=(",", ":"))
                    for k, p in sorted(want.items())}
     new_clients = {k: keys[k] for k in sorted(want)}
-    parsed = {k: _parse(v) for k, v in gateway.items()}
-    if parsed == {k: json.loads(v) for k, v in new_gateway.items()} and clients == new_clients:
+    parsed, target = {k: _parse(v) for k, v in gateway.items()}, {k: json.loads(v) for k, v in new_gateway.items()}
+    gateway_diff, clients_diff = _diff(parsed, target), _diff(clients, new_clients)
+    if not any(gateway_diff.values()) and not any(clients_diff.values()):
         return None
-    kv.kv_put(mount, GATEWAY, new_gateway)
-    kv.kv_put(mount, CLIENTS, new_clients)
-    changed = sorted(k for k in want if k in gateway and parsed.get(k) != json.loads(new_gateway[k])
-                     or k in clients and clients[k] != keys[k])
-    out = {"added": sorted(set(want) - set(gateway)), "removed": sorted(set(gateway) - set(want)), "changed": changed}
-    log.info("gateway key maps written: %s", out)
-    return out
+    if any(gateway_diff.values()):
+        kv.kv_put(mount, GATEWAY, new_gateway)
+        wrote(GATEWAY, gateway_diff)
+    if any(clients_diff.values()):
+        kv.kv_put(mount, CLIENTS, new_clients)
+        wrote(CLIENTS, clients_diff)
+    log.info("gateway key maps written: %s", {GATEWAY: gateway_diff, CLIENTS: clients_diff})
+    return gateway_diff if any(gateway_diff.values()) else clients_diff
+
+
+def _diff(old: dict, new: dict) -> dict:
+    return {"added": sorted(set(new) - set(old)), "removed": sorted(set(old) - set(new)),
+            "changed": sorted(k for k in set(old) & set(new) if old[k] != new[k])}
 
 
 def _parse(value):
