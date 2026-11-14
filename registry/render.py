@@ -21,9 +21,12 @@ import yaml
 
 
 def renderer_from_env(env) -> "Renderer":
-    """The policy repository (POLICY_REPO; DEPLOY_REPO is its older name) and a cache."""
+    """The policy repository (POLICY_REPO; DEPLOY_REPO is its older name), the repositories
+    older policy commits may be in (POLICY_REPO_FALLBACKS, space-separated: where the policy
+    lived before), and a cache."""
     repo = env.get("POLICY_REPO") or env["DEPLOY_REPO"]
-    return Renderer(repo, Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts")
+    return Renderer(repo, Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts",
+                    fallbacks=(env.get("POLICY_REPO_FALLBACKS") or "").split())
 
 
 class RenderError(Exception):
@@ -33,8 +36,8 @@ class RenderError(Exception):
 
 
 class Renderer:
-    def __init__(self, repo: str, cache: Path):
-        self.repo, self.cache = repo, cache
+    def __init__(self, repo: str, cache: Path, fallbacks: list[str] | None = None):
+        self.repo, self.cache, self.fallbacks = repo, cache, list(fallbacks or [])
         cache.mkdir(parents=True, exist_ok=True)
 
     def checkout(self, revision: str) -> Path:
@@ -42,7 +45,15 @@ class Renderer:
         if not (path / ".git").exists():
             tmp = Path(tempfile.mkdtemp(dir=self.cache))
             subprocess.run(["git", "init", "-q", str(tmp)], check=True)
-            subprocess.run(["git", "-C", str(tmp), "fetch", "-q", "--depth", "1", self.repo, revision], check=True)
+            # the policy's repository, or one it lived in before (an active or older commit)
+            for i, repo in enumerate([self.repo, *self.fallbacks]):
+                fetch = subprocess.run(["git", "-C", str(tmp), "fetch", "-q", "--depth", "1", repo, revision],
+                                       capture_output=True, text=True)
+                if fetch.returncode == 0:
+                    break
+                if i == len(self.fallbacks):
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    raise subprocess.CalledProcessError(fetch.returncode, fetch.args, fetch.stdout, fetch.stderr)
             subprocess.run(["git", "-C", str(tmp), "checkout", "-q", "FETCH_HEAD"], check=True)
             tmp.rename(path)
         return path
