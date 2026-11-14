@@ -364,6 +364,7 @@ def test_a_commit_that_changes_neither_bundle_is_skipped(world):
         ch = c.execute("select * from change_request where id = %s", (cid,)).fetchone()
     assert (ch["state"], ch["required_approvals"], ch["object_id"]) == ("skipped", [], docs)
     assert ch["replay_report"]["unchanged"] is True
+    assert ch["replay_report"]["records_change"] is False         # the fields a recheck reads
     assert store.active("gateway-policy") == first and watch.propose() is None
     # a real change after it is compared with the active commit, and filed
     sha = commit(world["repo"], "rules", rule='data.projects[input.p].on; input.p != "z"')
@@ -372,3 +373,15 @@ def test_a_commit_that_changes_neither_bundle_is_skipped(world):
         ch2 = c.execute("select * from change_request where id = %s", (cid2,)).fetchone()
     assert ch2["state"] == "pending_approval" and ch2["before"] == {"commit": first} and ch2["object_id"] == sha
     assert state(db, cid)["state"] == "skipped"                  # not superseded: it was never open
+
+
+def test_a_renderer_change_is_not_skipped_even_if_todays_records_render_the_same(world):
+    db, watch = world["db"], world["watch"]
+    gen = world["repo"] / "scripts" / "gen-projects.py"
+    gen.write_text(gen.read_text() + "# accepts an optional field from now on\n")
+    git("add", "-A", cwd=world["repo"])
+    git("commit", "-qm", "renderer change", cwd=world["repo"])
+    cid = watch.propose()
+    with db.tx() as c:
+        ch = c.execute("select state, replay_report from change_request where id = %s", (cid,)).fetchone()
+    assert ch["state"] == "pending_approval" and ch["replay_report"]["records_change"] is False
