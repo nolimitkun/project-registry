@@ -1,5 +1,9 @@
 # Design: project registry (phase 2)
 
+> Moved here from nolimitkun/mini-platform-deployment (`docs/project-registry.md`) on
+> 2026-11-14. Paths such as `minikube/...` and `scripts/...` are in that repo;
+> `policies/`, `catalog/` and the record schemas are in nolimitkun/gateway-policy.
+
 Status: **proof of concept built and deployed on minikube** (2026-11-13): the
 core below, in [nolimitkun/project-registry](https://github.com/nolimitkun/project-registry)
 and the `project-registry` and `opa-policy` apps, with a portal page at

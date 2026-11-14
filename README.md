@@ -1,6 +1,6 @@
 # project-registry
 
-The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway: phase 2 of its multi-project policy, designed in [docs/project-registry.md](https://github.com/nolimitkun/mini-platform-deployment/blob/main/docs/project-registry.md).
+The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway: phase 2 of its multi-project policy, designed in [docs/design.md](docs/design.md).
 
 The registry publishes both of the gateway's OPA bundles, and every change to either is a change request with approvals, a replay report, activation tracking and rollback:
 
@@ -79,7 +79,7 @@ People log in to Keycloak with the authorization code flow and PKCE, through the
 
 OPA verifies the result like any bundle signed with `--signing-key`, using the public key and the key id (`registry/bundles.py`).
 
-The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle only with the key its config names for it, so a rotation moves the version, the key id (`SIGNING_KEYID`) and OPA's config in one change. When an active bundle is signed with another key, the publisher signs it again: the same commit, or the same records, with no approval. The runbook is in the deployment repo's `docs/project-registry.md`.
+The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle only with the key its config names for it, so a rotation moves the version, the key id (`SIGNING_KEYID`) and OPA's config in one change. When an active bundle is signed with another key, the publisher signs it again: the same commit, or the same records, with no approval. The runbook is in this repo's `docs/design.md`.
 
 ## Layout
 

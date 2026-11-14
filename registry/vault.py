@@ -35,7 +35,7 @@ class TransitSigner:
 
     Pinned to one key version: OPA verifies a bundle with the one key its config
     names for it, so a rotation moves the version, the key id and OPA's config in
-    one change (docs/project-registry.md "Rotating the signing key")."""
+    one change (docs/design.md "Rotating the signing key")."""
 
     def __init__(self, vault: Vault, key: str, keyid: str, mount: str = "transit", version: int | None = None):
         self.vault, self.key, self.keyid, self.mount, self.version = vault, key, keyid, mount, version
