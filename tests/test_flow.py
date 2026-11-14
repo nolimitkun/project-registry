@@ -1,7 +1,7 @@
-"""End to end on a real Postgres and the real gen-projects.py of the deployment repo.
+"""End to end on a real Postgres and the real gen-projects.py of the policy repo.
 
-Needs TEST_DATABASE_URL (a disposable database) and, optionally, DEPLOY_REPO
-(default: the public deployment repo) and DEPLOY_REVISION (default: its main).
+Needs TEST_DATABASE_URL (a disposable database) and, optionally, POLICY_REPO
+(default: nolimitkun/gateway-policy) and POLICY_REVISION (default: its main).
 """
 import json
 import os
@@ -19,7 +19,7 @@ from tests.test_bundles import OPA, FakeS3
 DSN = os.environ.get("TEST_DATABASE_URL")
 # The platform's own projects, as the project-registry chart seeds a new cluster with
 SEED = json.loads((Path(__file__).parent / "fixtures" / "seed.json").read_text())
-REPO = os.environ.get("DEPLOY_REPO", "https://github.com/nolimitkun/mini-platform-deployment.git")
+REPO = os.environ.get("POLICY_REPO", "https://github.com/nolimitkun/gateway-policy.git")
 pytestmark = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 
 ALICE = User("alice", {"platform-admins"})              # platform team, owner of every project
@@ -29,7 +29,7 @@ COST = User("cost", {"cost-owners"})
 
 
 def head(repo):
-    rev = os.environ.get("DEPLOY_REVISION")
+    rev = os.environ.get("POLICY_REVISION")
     if rev:
         return rev
     out = subprocess.run(["git", "ls-remote", repo, "refs/heads/main"], capture_output=True, text=True, check=True)

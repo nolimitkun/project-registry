@@ -49,7 +49,6 @@ ACTOR = "policy-watch"
 # them is not skipped, even if today's records render the same (it may accept, refuse or
 # render future records differently).
 RENDER_INPUTS = ("scripts/gen-projects.py", "projects/schema.json", "agents/schema.json", "catalog/models.yaml",
-                 "minikube/values/kagent-values.yaml", "minikube/values/kagent-resources.yaml",
                  "policies/gateway-projects/.manifest")
 
 
@@ -308,6 +307,6 @@ class PolicyWatch:
 def from_env(db: dbm.DB, store: Store, signer, renderer: Renderer, events) -> PolicyWatch:
     env = os.environ
     if env.get("POLICY_REPO") and env["POLICY_REPO"] != renderer.repo:
-        raise SystemExit("POLICY_REPO must be DEPLOY_REPO: the policy and the data format come from one repository")
+        raise SystemExit("POLICY_REPO must be the renderer's repository: the policy and the data format come from one")
     source = PolicySource(env.get("POLICY_REF", "main"), renderer, env.get("POLICY_DIR", "policies/gateway"))
     return PolicyWatch(db, store, signer, renderer, source, events, env["OPA_URL"])

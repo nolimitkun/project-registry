@@ -1,5 +1,5 @@
 """Who must approve a change: data.portal.required_approvals on the gateway's OPA, so
-the approval rules are Rego in the deployment repo (policies/gateway/portal.rego),
+the approval rules are Rego in the policy repo (policies/gateway/portal.rego),
 answered by the policy that is active now."""
 from __future__ import annotations
 

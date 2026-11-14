@@ -1,8 +1,9 @@
 """Renders the gateway-projects bundle directory from the registry's records with the
-platform's own scripts/gen-projects.py, at the commit of the active policy bundle.
+policy repository's scripts/gen-projects.py, at the commit of the active policy bundle.
 
 One validation library: the schema, the rules across files and the output format
-stay in the deployment repository, reviewed with the Rego and the catalog. The
+stay in the policy repository (nolimitkun/gateway-policy), reviewed with the Rego
+and the catalog. The
 registry writes its records as the project, agent and exception files that script
 reads, runs it, and takes policies/gateway-projects. The records themselves live
 only in the registry; Git keeps the schema and the script, not a copy of them.
@@ -17,6 +18,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
+
+
+def renderer_from_env(env) -> "Renderer":
+    """The policy repository (POLICY_REPO; DEPLOY_REPO is its older name) and a cache."""
+    repo = env.get("POLICY_REPO") or env["DEPLOY_REPO"]
+    return Renderer(repo, Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts")
 
 
 class RenderError(Exception):

@@ -299,7 +299,7 @@ def test_a_format_change_the_old_policy_or_data_cant_take_is_refused(world):
 def test_policy_repo_must_be_the_deploy_repo(world, monkeypatch):
     monkeypatch.setenv("POLICY_REPO", "https://example.invalid/other.git")
     monkeypatch.setenv("OPA_URL", "http://opa")
-    with pytest.raises(SystemExit, match="POLICY_REPO must be DEPLOY_REPO"):
+    with pytest.raises(SystemExit, match="POLICY_REPO must be the renderer's repository"):
         policy.from_env(world["db"], world["store"], world["signer"], world["watch"].renderer, lambda: [])
 
 

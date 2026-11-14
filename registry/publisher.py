@@ -32,7 +32,7 @@ from . import activation
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .policy import PolicyWatch, same_data
-from .render import Renderer
+from .render import Renderer, renderer_from_env
 from .replay import fetch, replay
 
 log = logging.getLogger("publisher")
@@ -191,7 +191,7 @@ class Publisher:
             return None
 
     # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in
-    AGENTREGISTRY_FILE = "minikube/gitops/agentregistry-catalog/files/agents.yaml"
+    AGENTREGISTRY_FILE = "generated/agentregistry-agents.yaml"
 
     def sync_agentregistry(self, url: str | None) -> int | None:
         """Applies the registered agents to agentregistry's catalog (/v0/apply: idempotent,
@@ -304,7 +304,7 @@ def main() -> None:
     store = Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", ""))
     signer = TransitSigner(Vault(env["VAULT_ADDR"], env["VAULT_ROLE"]), env["TRANSIT_KEY"], env["SIGNING_KEYID"],
                            version=int(env["SIGNING_KEY_VERSION"]) if env.get("SIGNING_KEY_VERSION") else None)
-    renderer = Renderer(env["DEPLOY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts")
+    renderer = renderer_from_env(env)
     loki, ns = env["LOKI_URL"], env.get("DECISION_LOG_NAMESPACE", "mini-platform")
     since, limit = env.get("REPLAY_SINCE", "24h"), int(env.get("REPLAY_LIMIT", "2000"))
     events = lambda: fetch(loki, ns, since, limit)                          # noqa: E731
