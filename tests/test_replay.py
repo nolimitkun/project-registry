@@ -58,3 +58,12 @@ def test_an_undefined_decision_is_a_denial_and_keeps_the_order(tmp_path):
     report = replay.replay_all(events, [old], [new], OPA)
     assert (report["replayed"], report["changed"], report["allowed_to_denied"]) == (2, 1, 1)
     assert report["examples"][0]["project"] == "a"
+
+
+def test_a_request_without_a_body_replays_one_whose_body_was_dropped_does_not():
+    def logged(method, erased):
+        return {"path": replay.RULE, "result": {"allowed": True}, "erased": erased,
+                "input": {"attributes": {"request": {"http": {"method": method, "path": "/v1/models"}}}}}
+    assert replay.replayable(logged("GET", ["/input/parsed_body", "/input/truncated_body"]))
+    assert not replay.replayable(logged("POST", ["/input/parsed_body", "/input/truncated_body"]))
+    assert replay.replayable(logged("POST", ["/input/truncated_body"]))

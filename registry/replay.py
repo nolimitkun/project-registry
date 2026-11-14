@@ -38,10 +38,23 @@ def fetch(loki: str, namespace: str, since: str = "24h", limit: int = 2000) -> l
                 e = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if (e.get("path") == RULE and "input" in e and "result" in e
-                    and "/input/parsed_body" not in (e.get("erased") or [])):
+            if e.get("path") == RULE and "input" in e and "result" in e and replayable(e):
                 events.append(e)
     return events
+
+
+BODILESS = {"GET", "HEAD", "DELETE", "OPTIONS"}
+
+
+def replayable(event: dict) -> bool:
+    """Whether the logged input still holds what the policy decided on. The log mask keeps a
+    body's model and MCP method and tool, and drops a body that isn't an object: an empty
+    one (a GET), a JSON-RPC batch. A request without a body replays as it was; one whose
+    body was dropped (or logged before the mask kept the model) doesn't."""
+    if "/input/parsed_body" not in (event.get("erased") or []):
+        return True
+    method = event["input"].get("attributes", {}).get("request", {}).get("http", {}).get("method", "")
+    return method.upper() in BODILESS
 
 
 def project_of(event: dict) -> str | None:
