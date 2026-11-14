@@ -330,13 +330,13 @@ def main() -> None:
     agentregistry, synced = env.get("AGENTREGISTRY_URL"), 0.0
     charts = gatewaychart.HelmRepo(s3, env["GATEWAY_MODELS_BUCKET"]) if env.get("GATEWAY_MODELS_BUCKET") else None
     charted = None
-    keys_mount, keyed, keyed_at = env.get("GATEWAY_KEYS_MOUNT"), None, 0.0
+    keys_mount, keyed, keyed_at, keys_retry = env.get("GATEWAY_KEYS_MOUNT"), None, 0.0, 0.0
 
     def gateway_keys() -> None:
         """The gateway's key maps in Vault (keys.py), after every data bundle and every
         five minutes (which also mends a map changed in Vault by hand)."""
-        nonlocal keyed, keyed_at
-        if not keys_mount:
+        nonlocal keyed, keyed_at, keys_retry
+        if not keys_mount or time.time() < keys_retry:
             return
         try:
             state = (store.active(pub.policy_bundle), store.active(pub.data_bundle))
@@ -350,6 +350,7 @@ def main() -> None:
                     dbm.audit(c, "publisher", "keys", keysmod.GATEWAY, None, written)
             keyed, keyed_at = state, time.time()
         except Exception:
+            keys_retry = time.time() + 60                   # Vault down or no permission: once a minute
             log.exception("writing the gateway's key maps")
 
     def chart() -> None:
