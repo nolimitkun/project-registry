@@ -42,7 +42,7 @@ def world(tmp_path, monkeypatch):
     s3 = FakeS3()
     store = bundles.Store(s3, "b")
     policy_rev = head(REPO)
-    # an active policy bundle at that commit, as the policy build leaves it
+    # an active policy bundle at that commit, as the publisher leaves it
     (tmp_path / "p").write_bytes(b"placeholder")
     store.put_revision("gateway-policy", policy_rev, tmp_path / "p")
     store.activate("gateway-policy", policy_rev)
