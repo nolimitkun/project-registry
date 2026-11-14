@@ -1,12 +1,13 @@
 """The gateway's model routes, published as a Helm chart for Argo CD.
 
 The policy repository has the chart (charts/gateway-models: an AgentgatewayModel per
-model, the auto models, the Google API routes) and the catalog it is templated over
-(generated/agentgateway-catalog.yaml). Once a policy commit is active, the publisher
-packages the chart at that commit with the catalog as its values and publishes it to
-a Helm repository in a bucket of its own (index.yaml next to the charts); the
-deployment repo's Argo CD application installs the newest version, with the
-gateway's own values. Argo CD can't read values from MinIO, so the catalog travels in
+model, the auto models, the Google API routes). The catalog it is templated over is
+the registry's catalog records, rendered by the policy's gen-catalog.py at the active
+commit (a commit from before the catalog moved here: its generated/agentgateway-catalog.yaml).
+The publisher packages the chart at that commit with the catalog as its values, whenever
+either changes, and publishes it to a Helm repository in a bucket of its own (index.yaml
+next to the charts); the deployment repo's Argo CD application installs the newest
+version, with the gateway's own values. Argo CD can't read values from MinIO, so the catalog travels in
 the chart.
 
 The routes and the policy take effect apart, but both fail closed: a route OPA

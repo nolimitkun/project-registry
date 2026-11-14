@@ -3,7 +3,7 @@ MCP tool (risk), and the catalog's settings (task classes, serving namespaces, M
 targets), as records with change requests and approvals, like a project's.
 
 They render with the policy repo's gen-catalog.py (render.write_catalog writes them as its
-input files) into data.catalog in the gateway-projects bundle, and into the values of the
+input files) into data.registry.catalog in the gateway-projects bundle, and into the values of the
 gateway-models chart (gatewaychart.py).
 
 adopt(): the first time, the records come from the active policy commit's catalog files,
