@@ -164,6 +164,20 @@ class Store:
             raise
         return json.loads(obj["Body"].read())["revision"]
 
+    def revisions(self, bundle: str) -> list[str]:
+        """Every revision kept for the bundle."""
+        prefix = self._key(bundle, "revisions") + "/"
+        out, token = [], None
+        while True:
+            kw = {"Bucket": self.bucket, "Prefix": prefix, "Delimiter": "/"}
+            if token:
+                kw["ContinuationToken"] = token
+            page = self.s3.list_objects_v2(**kw)
+            out += [p["Prefix"][len(prefix):].rstrip("/") for p in page.get("CommonPrefixes") or []]
+            if not page.get("IsTruncated"):
+                return out
+            token = page["NextContinuationToken"]
+
     # --- the registry's own snapshots (snapshot.py), next to the bundles ---
     SNAPSHOTS = "registry-snapshots"
 

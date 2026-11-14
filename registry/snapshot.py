@@ -17,9 +17,15 @@ import time
 from . import db as dbm
 
 
-def run(db: dbm.DB, store) -> str:
+def run(db: dbm.DB, store) -> str | None:
     with db.tx() as c:
         records = dbm.resources(c)
+    if not records["project"]:
+        # an empty registry (a new database not imported yet) must not replace the snapshot
+        # it is about to be restored from
+        print("the registry has no records: no snapshot", flush=True)
+        return None
+    with db.tx() as c:
         active = c.execute("select revision from publication where state = 'active' "
                            "order by seq desc limit 1").fetchone()
     body = json.dumps({"revision": active["revision"] if active else None, **records},

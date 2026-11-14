@@ -89,6 +89,11 @@ class FakeS3:
     def download_file(self, bucket, key, path):
         Path(path).write_bytes(self.objects[key])
 
+    def list_objects_v2(self, Bucket, Prefix, Delimiter="/", ContinuationToken=None):
+        subs = sorted({Prefix + k[len(Prefix):].split(Delimiter)[0] + Delimiter
+                       for k in self.objects if k.startswith(Prefix) and Delimiter in k[len(Prefix):]})
+        return {"CommonPrefixes": [{"Prefix": p} for p in subs], "IsTruncated": False}
+
 
 def test_store_activates_and_rolls_back(tmp_path):
     s3, store = FakeS3(), None

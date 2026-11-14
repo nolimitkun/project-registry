@@ -314,9 +314,15 @@ def test_a_snapshot_is_what_an_empty_registry_imports(world):
     snapshot.run(db, store)
     records, source = importer.records_from(None, store.latest_snapshot())
     assert source == "snapshot" and records["project"]["admin"]["owner"] == "changed"
-    with db.tx() as c:                                     # the database is lost
-        c.execute("delete from resource")
-    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", records, source, opa=OPA)
+    before = set(store.revisions("gateway-projects"))
+    with db.tx() as c:                                     # the database is lost: a new one
+        c.execute("drop schema public cascade; create schema public")
+    db.migrate()
+    assert snapshot.run(db, store) is None                 # empty: latest.json stays the recovery point
+    records, source = importer.records_from(None, store.latest_snapshot())
+    assert source == "snapshot"
+    rev = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", records, source, opa=OPA)
+    assert rev not in before                               # bundle_seq moved past the kept revisions
     with db.tx() as c:
         assert c.execute("select spec from resource where kind='project' and id='admin'").fetchone()["spec"]["owner"] \
             == "changed"

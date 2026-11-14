@@ -27,13 +27,25 @@ KINDS = ("project", "agent", "exception")
 
 
 def records_from(seed: Path | None, snapshot: bytes | None) -> tuple[dict, str]:
-    if snapshot:
-        doc, source = json.loads(snapshot), "snapshot"
+    doc = json.loads(snapshot) if snapshot else None
+    if doc and doc.get("project"):        # a snapshot without projects is no recovery point
+        source = "snapshot"
     elif seed:
         doc, source = yaml.safe_load(seed.read_text()) or {}, f"seed {seed.name}"
     else:
         raise SystemExit("no snapshot in the store and no --seed: nothing to import")
     return {k: doc.get(k) or {} for k in KINDS}, source
+
+
+def skip_used_revisions(c, store, data_bundle: str) -> None:
+    """A new database starts bundle_seq over, but the store keeps every revision it had: move
+    the sequence past them, so no published revision is written over."""
+    used = [int(r.split("-", 1)[1]) for r in store.revisions(data_bundle)
+            if r.startswith("projects-") and r.split("-", 1)[1].isdigit()]
+    row = c.execute("select last_value, is_called from bundle_seq").fetchone()
+    current = row["last_value"] if row["is_called"] else row["last_value"] - 1
+    if used and max(used) > current:
+        c.execute("select setval('bundle_seq', %s)", (max(used),))
 
 
 def run(db: dbm.DB, store, signer, renderer, owner_group: str, records: dict, source: str,
@@ -51,6 +63,7 @@ def run(db: dbm.DB, store, signer, renderer, owner_group: str, records: dict, so
         for pid in records["project"]:
             c.execute("insert into project_owner values (%s, %s) on conflict do nothing", (pid, owner_group))
         rendered = renderer.render(dbm.resources(c), policy_rev, Path(tmp) / "gateway-projects")
+        skip_used_revisions(c, store, data_bundle)
         seq = c.execute("select nextval('bundle_seq') as n").fetchone()["n"]
         revision = f"projects-{seq:08d}"
         out = Path(tmp) / "bundle.tar.gz"
