@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 import requests
+import yaml
 from psycopg.types.json import Jsonb
 
 from . import activation
@@ -209,7 +210,12 @@ class Publisher:
             self.renderer.render(records, policy_rev, Path(tmp) / "bundle", also={self.AGENTREGISTRY_FILE: out})
             if not out.exists():
                 return 0
-            body = out.read_bytes()
+            # one YAML document per entry; gen-projects.py opens with a comment-only one, which
+            # agentregistry refuses as an entry without apiVersion
+            docs = [d for d in yaml.safe_load_all(out.read_text()) if d]
+            if not docs:
+                return 0
+            body = yaml.safe_dump_all(docs, sort_keys=False).encode()
         r = requests.post(f"{url.rstrip('/')}/v0/apply", data=body, headers={"content-type": "application/yaml"},
                           timeout=30)
         r.raise_for_status()

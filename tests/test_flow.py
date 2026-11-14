@@ -344,3 +344,6 @@ def test_the_registry_keeps_agentregistry_current(world, monkeypatch):
     assert pub.sync_agentregistry("http://agentregistry:12121") == 2
     url, body = sent[0]
     assert url == "http://agentregistry:12121/v0/apply" and b"kagent-k8s-agent" in body
+    import yaml
+    docs = list(yaml.safe_load_all(body))
+    assert len(docs) == 5 and all(d and d.get("apiVersion") for d in docs)   # no comment-only document
