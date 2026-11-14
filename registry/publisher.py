@@ -28,7 +28,7 @@ import requests
 import yaml
 from psycopg.types.json import Jsonb
 
-from . import activation, gatewaychart
+from . import activation, catalog, gatewaychart
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .policy import PolicyWatch, same_data
@@ -45,7 +45,17 @@ class ReplayStopped(Exception):
         self.report = report
 
 
+class Everyone(set):
+    """A catalog change may change any project's decisions: its replay holds nothing back
+    (the report is for the approvers, as for a policy change)."""
+
+    def __contains__(self, item) -> bool:
+        return True
+
+
 def projects_touched(change: dict) -> set[str]:
+    if change["kind"] in dbm.CATALOG_KINDS:
+        return Everyone()
     if change["kind"] in ("project", "exception"):
         return {change["object_id"]}
     return {s["project"] for s in (change["before"], change["after"]) if s and s.get("project")}
@@ -266,7 +276,8 @@ class Publisher:
         for ch in changes:
             dbm.apply_change(c, ch)
         records = dbm.resources(c)
-        touched = set().union(*(projects_touched(ch) for ch in changes))
+        each = [projects_touched(ch) for ch in changes]
+        touched = Everyone() if any(isinstance(t, Everyone) for t in each) else set().union(*each)
         seq = c.execute("select nextval('bundle_seq') as n").fetchone()["n"]
         revision = f"projects-{seq:08d}"
         with tempfile.TemporaryDirectory() as tmp:
@@ -325,14 +336,18 @@ def main() -> None:
         if not charts:
             return
         try:
-            active = store.active(pub.policy_bundle)       # MinIO may be down: log, try next round
-            if not active or active == charted:
+            # MinIO may be down: log, try next round
+            active = store.active(pub.policy_bundle)
+            state = (active, store.active(pub.data_bundle))   # the catalog's records travel with the data
+            if not active or state == charted:
                 return
-            version = gatewaychart.ensure(charts, renderer, active)
+            with db.tx() as c:
+                records = dbm.resources(c)
+            version = gatewaychart.ensure(charts, renderer, active, records)
             if version:
                 with db.tx() as c:
                     dbm.audit(c, "publisher", "publish", f"gateway-models@{version}", None, {"policy": active})
-            charted = active
+            charted = state
         except Exception:
             log.exception("publishing the gateway-models chart")
 
@@ -346,6 +361,8 @@ def main() -> None:
     while True:
         try:
             watch.bootstrap()                       # a new cluster: the branch's head, unapproved
+            if store.active(pub.policy_bundle):     # the catalog's records, the first time
+                catalog.adopt(db, renderer, store.active(pub.policy_bundle))
             watch.resign_if_needed()
             pub.resign_if_needed()
             break

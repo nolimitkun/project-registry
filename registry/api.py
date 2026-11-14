@@ -30,7 +30,9 @@ from .bundles import Store
 from .policy import same_data
 from .render import Renderer, RenderError, kagent_wiring_from_env, renderer_from_env
 
-KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception"}
+KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception",
+         # the catalog: proposed by the platform team (portal.may_submit)
+         "models": "model", "google-apis": "google_api", "tools": "tool", "catalog": "catalog"}
 PORTAL = Path(__file__).resolve().parent / "static" / "portal.html"
 
 

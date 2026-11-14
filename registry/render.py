@@ -76,6 +76,42 @@ def kagent_wiring_from_env(env) -> "KagentWiring | None":
                         Path(env.get("WORKDIR", "/tmp/registry")))
 
 
+def write_catalog(work: Path, records: dict) -> None:
+    """The catalog records, as the files gen-catalog.py reads: catalog/models.yaml (the
+    settings' servingNamespaces and tasks, the models, the Google APIs) and catalog/tools.yaml
+    (the settings' MCP targets, the tools). Without catalog records the repo's own files stay:
+    a policy commit from before the catalog moved to the registry."""
+    if not any(records.get(k) for k in ("model", "google_api", "tool", "catalog")):
+        return
+    settings = (records.get("catalog") or {}).get("settings") or {}
+    (work / "catalog").mkdir(exist_ok=True)
+    (work / "catalog" / "models.yaml").write_text(yaml.safe_dump({
+        "servingNamespaces": settings.get("servingNamespaces") or [],
+        "models": records.get("model") or {},
+        "tasks": settings.get("tasks") or {},
+        "googleApis": records.get("google_api") or {}}, sort_keys=False))
+    (work / "catalog" / "tools.yaml").write_text(yaml.safe_dump({
+        "targets": settings.get("targets") or [],
+        "tools": records.get("tool") or {}}, sort_keys=False))
+
+
+def read_catalog(work: Path) -> dict:
+    """The catalog files of a checkout as records (the inverse of write_catalog)."""
+    out = {"model": {}, "google_api": {}, "tool": {}, "catalog": {}}
+    models_file, tools_file = work / "catalog" / "models.yaml", work / "catalog" / "tools.yaml"
+    if not models_file.exists():
+        return out
+    models = yaml.safe_load(models_file.read_text()) or {}
+    tools = (yaml.safe_load(tools_file.read_text()) or {}) if tools_file.exists() else {}
+    out["model"] = models.get("models") or {}
+    out["google_api"] = models.get("googleApis") or {}
+    out["tool"] = tools.get("tools") or {}
+    out["catalog"] = {"settings": {"servingNamespaces": models.get("servingNamespaces") or [],
+                                   "tasks": models.get("tasks") or {},
+                                   "targets": tools.get("targets") or []}}
+    return out
+
+
 class RenderError(Exception):
     def __init__(self, errors: list[str]):
         super().__init__("; ".join(errors))
@@ -123,12 +159,22 @@ class Renderer:
             if records["exception"]:
                 (work / "projects" / "_exceptions.yaml").write_text(
                     yaml.safe_dump({"exceptions": records["exception"]}, sort_keys=False))
+            write_catalog(work, records)
             yield work
 
     @staticmethod
     def _gen(work: Path, *args: str, env: dict[str, str] | None = None) -> str:
+        env = {**os.environ, **(env or {})}
+        # The catalog first (validated, rendered to data.catalog and the gateway's values),
+        # then the projects, which are checked against it.
+        if (work / "scripts" / "gen-catalog.py").exists():
+            cat = subprocess.run([sys.executable, "scripts/gen-catalog.py"], cwd=work,
+                                 capture_output=True, text=True, env=env)
+            if cat.returncode != 0:
+                errors = [l.strip() for l in (cat.stderr or cat.stdout).splitlines() if l.strip()]
+                raise RenderError(errors or ["gen-catalog.py failed"])
         run = subprocess.run([sys.executable, "scripts/gen-projects.py", *args], cwd=work,
-                             capture_output=True, text=True, env={**os.environ, **(env or {})})
+                             capture_output=True, text=True, env=env)
         if run.returncode != 0:
             errors = [l.strip() for l in (run.stderr or run.stdout).splitlines() if l.strip()]
             raise RenderError(errors or ["gen-projects.py failed"])

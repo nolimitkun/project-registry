@@ -414,3 +414,37 @@ def test_concurrent_agent_proposals_share_one_wiring_refresh(world, tmp_path):
     with ThreadPoolExecutor(8) as pool:
         results = list(pool.map(lambda _: wiring.env(), range(16)))
     assert all(Path(r["KAGENT_VALUES"]).exists() for r in results)
+
+
+def test_the_catalog_is_adopted_then_changed_by_request_into_the_data_bundle(world):
+    import json
+    import tarfile
+    import tempfile
+    from registry import catalog, gatewaychart
+    db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    rev = store.active("gateway-policy")
+    n = catalog.adopt(db, world["renderer"], rev)
+    assert n > 0 and catalog.adopt(db, world["renderer"], rev) == 0          # once
+    with db.tx() as c:
+        model = c.execute("select spec from resource where kind = 'model' and id = 'gemini-3.5-flash'").fetchone()["spec"]
+    roles["value"] = ["cost_owner", "platform"]
+    with pytest.raises(HTTPException) as e:                                   # gen-catalog.py validates it
+        reg.submit(ALICE, "model", "gemini-3.5-flash", "update", api.ChangeIn(spec={"placement": "moon"}))
+    assert e.value.status_code == 422 and "placement" in str(e.value.detail)
+    ch = reg.submit(ALICE, "model", "gemini-3.5-flash", "update", api.ChangeIn(spec={"price": {"input": 9, "output": 9}}))
+    assert ch["after"]["price"] == {"input": 9, "output": 9} and ch["before"] == model
+    reg.decide(BOB, ch["id"], "approve", None)
+    reg.decide(COST, ch["id"], "approve", None)
+    data = pub.publish_once()
+    assert data and store.active("gateway-projects") == data
+    with tempfile.TemporaryDirectory() as tmp:
+        with tarfile.open(store.fetch("gateway-projects", data, Path(tmp) / "b.tar.gz")) as tar:
+            merged = json.loads(tar.extractfile(next(m for m in tar.getmembers() if m.name.endswith("data.json"))).read())
+    assert merged["registry"]["catalog"]["models"]["gemini-3.5-flash"]["price"] == {"input": 9, "output": 9}
+    # the gateway's chart values come from the records too
+    with db.tx() as c:
+        records = dbm.resources(c)
+    records["google_api"]["speech"] = {**records["google_api"]["speech"], "host": "elsewhere.googleapis.com"}
+    values = gatewaychart.catalog_values(world["renderer"], rev, records)
+    assert values["googleApis"]["speech"]["host"] == "elsewhere.googleapis.com"

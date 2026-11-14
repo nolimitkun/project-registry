@@ -23,7 +23,7 @@ from psycopg.types.json import Jsonb
 from . import db as dbm
 from .bundles import build
 
-KINDS = ("project", "agent", "exception")
+KINDS = dbm.KINDS
 
 
 def records_from(seed: Path | None, snapshot: bytes | None) -> tuple[dict, str]:
@@ -58,7 +58,7 @@ def run(db: dbm.DB, store, signer, renderer, owner_group: str, records: dict, so
             print("the registry already has records: nothing to import")
             return store.active(data_bundle)
         for kind in KINDS:
-            for oid, spec in records[kind].items():
+            for oid, spec in (records.get(kind) or {}).items():
                 c.execute("insert into resource (kind, id, spec) values (%s, %s, %s)", (kind, oid, Jsonb(spec)))
         for pid in records["project"]:
             c.execute("insert into project_owner values (%s, %s) on conflict do nothing", (pid, owner_group))
