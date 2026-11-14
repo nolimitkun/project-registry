@@ -21,6 +21,7 @@ protect yet, and nothing else can be published without it.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -87,14 +88,28 @@ def stored_with_key(store: Store, bundle: str, revision: str, keyid: str) -> boo
 
 
 def same_data(directory: Path, bundle: Path) -> bool:
-    """Whether a rendered bundle directory holds the same data files as a built bundle."""
-    skip = {".manifest", ".signatures.json"}
-    mine = {str(p.relative_to(directory)): p.read_bytes() for p in directory.rglob("*")
-            if p.is_file() and p.name not in skip}
+    """Whether a rendered bundle directory holds the same data as a built bundle. Compared as
+    data, not files: `opa build` merges every data file into one /data.json."""
+    mine: dict = {}
+    for p in directory.rglob("data.json"):
+        _put(mine, p.relative_to(directory).parent.parts, json.loads(p.read_text()))
+    theirs: dict = {}
     with tarfile.open(bundle) as tar:
-        theirs = {m.name.lstrip("/"): tar.extractfile(m).read() for m in tar.getmembers()
-                  if m.isfile() and Path(m.name).name not in skip}
+        for m in tar.getmembers():
+            if m.isfile() and Path(m.name).name == "data.json":
+                _put(theirs, Path(m.name.lstrip("/")).parent.parts, json.loads(tar.extractfile(m).read()))
     return mine == theirs
+
+
+def _put(tree: dict, path: tuple[str, ...], value) -> None:
+    """Merges value into tree at path, as OPA does with a bundle's data files."""
+    for key in path:
+        tree = tree.setdefault(key, {})
+    for k, v in value.items():
+        if isinstance(v, dict) and isinstance(tree.get(k), dict):
+            _put(tree[k], (), v)
+        else:
+            tree[k] = v
 
 
 class PolicyWatch:

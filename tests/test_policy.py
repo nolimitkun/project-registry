@@ -227,3 +227,15 @@ def test_a_policy_published_before_the_registry_did_is_adopted(world):
         rows = c.execute("select revision, state, active_at is not null as on from policy_publication").fetchall()
     assert rows == [{"revision": first, "state": "active", "on": True}]
     assert watch.bootstrap() is None
+
+
+def test_same_data_compares_data_not_files(tmp_path):
+    src = tmp_path / "src"
+    (src / "projects" / "a").mkdir(parents=True)
+    (src / ".manifest").write_text('{"roots": ["projects"]}')
+    (src / "projects" / "a" / "data.json").write_text('{\n  "on": true, "n": {"x": 1}\n}\n')
+    signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "k")
+    bundles.build(src, "r1", signer, tmp_path / "b.tar.gz", opa=OPA)      # merged into one /data.json
+    assert policy.same_data(src, tmp_path / "b.tar.gz")
+    (src / "projects" / "a" / "data.json").write_text('{"on": true, "n": {"x": 2}}')
+    assert not policy.same_data(src, tmp_path / "b.tar.gz")
