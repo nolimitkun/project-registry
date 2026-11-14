@@ -56,6 +56,7 @@ None of these is a backup of the database (approvals, audit log).
 - `/internal/keys` and `/internal/mirrors`: which API key ids exist, for the Vault bootstrap. Ids, not keys.
 - `/internal/bundles/<bundle>`: the active bundle, for `scripts/policy-replay.py`.
 - agentregistry's catalog of registered agents: the publisher applies it after each publish and every hour (`AGENTREGISTRY_URL`).
+- the gateway's model routes: once a policy commit is active, the publisher packages its `charts/gateway-models` with the catalog as values and publishes it to a Helm repository in MinIO (`GATEWAY_MODELS_BUCKET`, `registry/gatewaychart.py`), which Argo CD installs.
 - `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule.
 
 `/export` returns every record (a signed-in user).
@@ -90,6 +91,7 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 | `registry/policy.py` | policy commits from Git as change requests: test, build, replay, file |
 | `registry/approvals.py` | who approves: `data.portal.required_approvals` on OPA |
 | `registry/activation.py` | when a published revision is active on every ready OPA pod |
+| `registry/gatewaychart.py` | the gateway-models chart, published as a Helm repository in MinIO |
 | `registry/snapshot.py` | the daily snapshot of the records into the bundle store |
 | `registry/importer.py` | the first load of an empty registry: the latest snapshot, or the seed |
 | `registry/bundles.py` | build, sign, verify; the versioned bundle store (S3/MinIO) |

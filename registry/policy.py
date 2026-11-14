@@ -49,7 +49,10 @@ ACTOR = "policy-watch"
 # them is not skipped, even if today's records render the same (it may accept, refuse or
 # render future records differently).
 RENDER_INPUTS = ("scripts/gen-projects.py", "projects/schema.json", "agents/schema.json", "catalog/models.yaml",
-                 "policies/gateway-projects/.manifest")
+                 "policies/gateway-projects/.manifest",
+                 # what the gateway-models chart is packaged from (gatewaychart.py): a change to
+                 # the gateway's routes is a policy change too, never skipped
+                 "charts/gateway-models", "generated/agentgateway-catalog.yaml")
 
 
 class Rejected(Exception):
