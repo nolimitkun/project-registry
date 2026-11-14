@@ -38,10 +38,31 @@ def fetch(loki: str, namespace: str, since: str = "24h", limit: int = 2000) -> l
                 e = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if (e.get("path") == RULE and "input" in e and "result" in e
-                    and "/input/parsed_body" not in (e.get("erased") or [])):
+            if e.get("path") == RULE and "input" in e and "result" in e and replayable(e):
                 events.append(e)
     return events
+
+
+BODILESS = {"GET", "HEAD", "DELETE", "OPTIONS"}
+
+
+def replayable(event: dict) -> bool:
+    """Whether the logged input still holds what the policy decided on. The log mask keeps a
+    body's model and MCP method and tool, and drops a body that isn't an object: an empty
+    one (a GET), a JSON-RPC batch. A request without a body replays as it was; one whose
+    body was dropped (or logged before the mask kept the model) doesn't."""
+    if "/input/parsed_body" not in (event.get("erased") or []):
+        return True
+    return bodiless(event["input"].get("attributes", {}).get("request", {}).get("http", {}))
+
+
+def bodiless(http: dict) -> bool:
+    """A request that carried no body: a method without one, and no Content-Length above 0
+    or Transfer-Encoding (a GET may carry a body, such as a JSON-RPC call to /mcp)."""
+    headers = {k.lower(): v for k, v in (http.get("headers") or {}).items()}
+    length = str(headers.get("content-length", "0")).strip() or "0"
+    return (http.get("method", "").upper() in BODILESS and "transfer-encoding" not in headers
+            and length.isdigit() and int(length) == 0)
 
 
 def project_of(event: dict) -> str | None:

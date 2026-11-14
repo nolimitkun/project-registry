@@ -10,8 +10,11 @@ only in the registry; Git keeps the schema and the script, not a copy of them.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import threading
+import time
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -27,6 +30,50 @@ def renderer_from_env(env) -> "Renderer":
     repo = env.get("POLICY_REPO") or env["DEPLOY_REPO"]
     return Renderer(repo, Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts",
                     fallbacks=(env.get("POLICY_REPO_FALLBACKS") or "").split())
+
+
+class KagentWiring:
+    """The deployment repo's kagent values, for gen-projects.py's check that a kagent agent
+    is wired to its own key (KAGENT_VALUES, KAGENT_RESOURCES). The wiring is deployed from
+    there, so it lands first and an agent is accepted after. Fetched from its branch,
+    at most every `ttl` seconds."""
+
+    FILES = {"KAGENT_VALUES": "minikube/values/kagent-values.yaml",
+             "KAGENT_RESOURCES": "minikube/values/kagent-resources.yaml"}
+
+    def __init__(self, repo: str, ref: str, cache: Path, ttl: int = 300):
+        # absolute: gen-projects.py runs in another directory (a copy of the policy repo)
+        self.repo, self.ref, self.cache, self.ttl = repo, ref, cache.resolve(), ttl
+        self.fetched = 0.0
+        # the API answers in threads: one refresh of the shared checkout at a time
+        self.lock = threading.Lock()
+
+    def env(self) -> dict[str, str]:
+        with self.lock:
+            return self._env()
+
+    def _env(self) -> dict[str, str]:
+        work = self.cache / "kagent-wiring"
+        if time.time() - self.fetched > self.ttl or not (work / ".git").exists():
+            if not (work / ".git").exists():
+                work.mkdir(parents=True, exist_ok=True)
+                subprocess.run(["git", "init", "-q", str(work)], check=True)
+                subprocess.run(["git", "-C", str(work), "config", "core.sparseCheckout", "true"], check=True)
+                (work / ".git" / "info" / "sparse-checkout").write_text("\n".join(self.FILES.values()) + "\n")
+            subprocess.run(["git", "-C", str(work), "fetch", "-q", "--depth", "1", self.repo, self.ref],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work), "checkout", "-q", "-f", "FETCH_HEAD"], check=True,
+                           capture_output=True)
+            self.fetched = time.time()
+        return {k: str(work / v) for k, v in self.FILES.items()}
+
+
+def kagent_wiring_from_env(env) -> "KagentWiring | None":
+    """KAGENT_WIRING_REPO (the deployment repo) and KAGENT_WIRING_REF (main); unset: no check."""
+    if not env.get("KAGENT_WIRING_REPO"):
+        return None
+    return KagentWiring(env["KAGENT_WIRING_REPO"], env.get("KAGENT_WIRING_REF", "main"),
+                        Path(env.get("WORKDIR", "/tmp/registry")))
 
 
 class RenderError(Exception):
@@ -79,21 +126,22 @@ class Renderer:
             yield work
 
     @staticmethod
-    def _gen(work: Path, *args: str) -> str:
+    def _gen(work: Path, *args: str, env: dict[str, str] | None = None) -> str:
         run = subprocess.run([sys.executable, "scripts/gen-projects.py", *args], cwd=work,
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, env={**os.environ, **(env or {})})
         if run.returncode != 0:
             errors = [l.strip() for l in (run.stderr or run.stdout).splitlines() if l.strip()]
             raise RenderError(errors or ["gen-projects.py failed"])
         return run.stdout
 
     def render(self, records: dict[str, dict[str, dict]], revision: str, out: Path,
-               also: dict[str, Path] | None = None) -> Path:
+               also: dict[str, Path] | None = None, env: dict[str, str] | None = None) -> Path:
         """records: {"project": {id: spec}, "agent": {...}, "exception": {project: entry}}.
         Writes the bundle directory to out; raises RenderError with the script's findings.
-        also: {path in the repo: destination}, other generated files to keep."""
+        also: {path in the repo: destination}, other generated files to keep.
+        env: for gen-projects.py (KAGENT_VALUES, KAGENT_RESOURCES: KagentWiring)."""
         with self.prepared(records, revision) as work:
-            self._gen(work)
+            self._gen(work, env=env)
             if out.exists():
                 shutil.rmtree(out)
             shutil.copytree(work / "policies" / "gateway-projects", out)

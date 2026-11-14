@@ -9,7 +9,7 @@ The registry publishes both of the gateway's OPA bundles, and every change to ei
 
 A project data change goes like this:
 
-1. **Validation.** The registry renders the whole data bundle with the change applied, using the platform's own `scripts/gen-projects.py` at the commit of the active policy bundle. Schema errors and cross-file errors come back before anyone is asked to approve.
+1. **Validation.** The registry renders the whole data bundle with the change applied, using the platform's own `scripts/gen-projects.py` at the commit of the active policy bundle. Schema errors and cross-file errors come back before anyone is asked to approve. A proposed kagent agent is also checked against the deployment repo's kagent wiring (`KAGENT_WIRING_REPO`): its own ModelConfig and secret must be there first.
 2. **Approvals.** Who has to approve is decided by policy: the registry asks OPA for `data.portal.required_approvals` (Rego in [gateway-policy](https://github.com/nolimitkun/gateway-policy)). The roles are:
 
    | Role | Who holds it |

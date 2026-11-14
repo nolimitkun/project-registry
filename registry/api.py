@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from .auth import ROLE_GROUPS, User, current_user
 from . import bundles
 from .bundles import Store
 from .policy import same_data
-from .render import Renderer, RenderError, renderer_from_env
+from .render import Renderer, RenderError, kagent_wiring_from_env, renderer_from_env
 
 KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception"}
 PORTAL = Path(__file__).resolve().parent / "static" / "portal.html"
@@ -58,8 +59,10 @@ def merge(base: dict, patch: dict) -> dict:
 
 class Registry:
     def __init__(self, db: dbm.DB, renderer: Renderer, store: Store, opa_url: str,
-                 policy_bundle="gateway-policy", data_bundle="gateway-projects", signing_keyid: str | None = None):
+                 policy_bundle="gateway-policy", data_bundle="gateway-projects", signing_keyid: str | None = None,
+                 kagent_wiring=None):
         self.db, self.renderer, self.store, self.opa_url = db, renderer, store, opa_url.rstrip("/")
+        self.kagent_wiring = kagent_wiring    # checks a proposed agent's kagent wiring (render.py)
         self.policy_bundle, self.data_bundle = policy_bundle, data_bundle
         self.signing_keyid = signing_keyid or os.environ.get("SIGNING_KEYID")
         self.opa_pods = activation.ready_opa_pods        # replaced in tests
@@ -120,9 +123,17 @@ class Registry:
             policy_rev = self.store.active(self.policy_bundle)
             if not policy_rev:
                 raise HTTPException(503, "no active policy bundle to validate against")
+            # A proposed agent is also checked against the deployment repo's kagent wiring.
+            # Only here: a publish never fails over wiring changed since.
+            wiring = None
+            if self.kagent_wiring and kind == "agent" and after:
+                try:
+                    wiring = self.kagent_wiring.env()
+                except (OSError, subprocess.CalledProcessError) as e:
+                    raise HTTPException(503, f"can't read the deployment repo's kagent wiring: {e}") from e
             with tempfile.TemporaryDirectory() as tmp:
                 try:
-                    self.renderer.render(records, policy_rev, Path(tmp) / "out")
+                    self.renderer.render(records, policy_rev, Path(tmp) / "out", env=wiring)
                 except RenderError as e:
                     raise HTTPException(422, {"errors": e.errors}) from e
             change = {"kind": kind, "object_id": oid, "op": op, "before": before, "after": after}
@@ -474,7 +485,8 @@ def _from_env() -> FastAPI:
     db.migrate()
     s3 = boto3.client("s3", endpoint_url=env["S3_ENDPOINT"], region_name=env.get("AWS_REGION", "us-east-1"))
     return create_app(Registry(db, renderer_from_env(env),
-                               Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", "")), env["OPA_URL"]))
+                               Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", "")), env["OPA_URL"],
+                               kagent_wiring=kagent_wiring_from_env(env)))
 
 
 app = _from_env() if os.environ.get("DATABASE_URL") else None
