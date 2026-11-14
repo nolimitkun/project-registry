@@ -23,8 +23,14 @@ log = logging.getLogger("catalog")
 
 def adopt(db: dbm.DB, renderer, policy_rev: str) -> int:
     """Imports the active policy commit's catalog files as records, if the registry has no
-    catalog records yet. Returns the number of records imported."""
+    catalog records yet. Returns the number of records imported.
+
+    Only once the initial import is done (the registry has a project): the importer
+    takes any record as a finished import, so catalog records first would make it skip
+    the seed or the snapshot. A seed or snapshot with the catalog makes this a no-op."""
     with db.tx() as c:
+        if not c.execute("select 1 from resource where kind = any(%s) limit 1", (list(dbm.PROJECT_KINDS),)).fetchone():
+            return 0
         if c.execute("select 1 from resource where kind = any(%s) limit 1", (list(dbm.CATALOG_KINDS),)).fetchone():
             return 0
         records = read_catalog(renderer.checkout(policy_rev))

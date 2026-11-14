@@ -361,8 +361,6 @@ def main() -> None:
     while True:
         try:
             watch.bootstrap()                       # a new cluster: the branch's head, unapproved
-            if store.active(pub.policy_bundle):     # the catalog's records, the first time
-                catalog.adopt(db, renderer, store.active(pub.policy_bundle))
             watch.resign_if_needed()
             pub.resign_if_needed()
             break
@@ -377,6 +375,11 @@ def main() -> None:
                 watch.propose()
             except Exception:
                 log.exception("proposing the policy branch's head")
+            try:                                    # the catalog's records, the first time
+                if store.active(pub.policy_bundle):
+                    catalog.adopt(db, renderer, store.active(pub.policy_bundle))
+            except Exception:
+                log.exception("adopting the policy's catalog")
         if time.time() - synced >= 3600:
             sync()
         chart()

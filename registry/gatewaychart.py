@@ -115,7 +115,7 @@ def ensure(repo: HelmRepo, renderer, policy_rev: str, records: dict | None = Non
     digest = hashlib.sha256(yaml.safe_dump(catalog, sort_keys=True).encode()).hexdigest()[:16]
     newest = repo.newest()
     annotations = (newest or {}).get("annotations") or {}
-    if annotations.get(POLICY_ANNOTATION) == policy_rev and annotations.get(CATALOG_ANNOTATION, digest) == digest:
+    if annotations.get(POLICY_ANNOTATION) == policy_rev and annotations.get(CATALOG_ANNOTATION) == digest:
         return None
     version = repo.publish(work / CHART, {"catalog": catalog}, policy_rev[:12],
                            {POLICY_ANNOTATION: policy_rev, CATALOG_ANNOTATION: digest})

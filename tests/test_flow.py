@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 
@@ -51,6 +52,12 @@ def world(tmp_path, monkeypatch):
     store.activate("gateway-policy", policy_rev)
     signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "opa-bundles")
     renderer = render.Renderer(REPO, tmp_path / "checkouts")
+    work = renderer.checkout(policy_rev)
+    catalog_seeded = not (work / "catalog" / "models.yaml").exists()
+    if catalog_seeded:          # the catalog lives in the registry: a seed carries it, like the deployment's
+        fixture = yaml.safe_load((work / "fixtures" / "records.yaml").read_text())
+        for kind in dbm.CATALOG_KINDS:
+            monkeypatch.setitem(SEED, kind, fixture.get(kind) or {})
     roles = {"value": ["project_owner"], "may_submit": True, "asked": []}
 
     class Resp:
@@ -72,7 +79,7 @@ def world(tmp_path, monkeypatch):
     pub = publisher.Publisher(db, store, signer, renderer, lambda: [], opa=OPA)
     monkeypatch.setattr(publisher, "replay", lambda *a: {"ok": True, "replayed": 0})
     return {"db": db, "store": store, "signer": signer, "renderer": renderer, "reg": reg, "pub": pub,
-            "roles": roles, "s3": s3}
+            "roles": roles, "s3": s3, "catalog_seeded": catalog_seeded}
 
 
 def test_import_from_the_seed_then_a_change_goes_through_approval_publish_and_activation(world):
@@ -422,10 +429,16 @@ def test_the_catalog_is_adopted_then_changed_by_request_into_the_data_bundle(wor
     import tempfile
     from registry import catalog, gatewaychart
     db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
-    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     rev = store.active("gateway-policy")
+    assert catalog.adopt(db, world["renderer"], rev) == 0                    # not before the import:
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    with db.tx() as c:                                                        # it would have skipped the seed
+        assert c.execute("select 1 from resource where kind = 'project' limit 1").fetchone()
     n = catalog.adopt(db, world["renderer"], rev)
-    assert n > 0 and catalog.adopt(db, world["renderer"], rev) == 0          # once
+    if world["catalog_seeded"]:                                               # the seed had it: nothing to adopt
+        assert n == 0
+    else:
+        assert n > 0 and catalog.adopt(db, world["renderer"], rev) == 0      # once
     with db.tx() as c:
         model = c.execute("select spec from resource where kind = 'model' and id = 'gemini-3.5-flash'").fetchone()["spec"]
     roles["value"] = ["cost_owner", "platform"]
