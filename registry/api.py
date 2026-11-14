@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -124,7 +125,12 @@ class Registry:
                 raise HTTPException(503, "no active policy bundle to validate against")
             # A proposed agent is also checked against the deployment repo's kagent wiring.
             # Only here: a publish never fails over wiring changed since.
-            wiring = self.kagent_wiring.env() if (self.kagent_wiring and kind == "agent" and after) else None
+            wiring = None
+            if self.kagent_wiring and kind == "agent" and after:
+                try:
+                    wiring = self.kagent_wiring.env()
+                except (OSError, subprocess.CalledProcessError) as e:
+                    raise HTTPException(503, f"can't read the deployment repo's kagent wiring: {e}") from e
             with tempfile.TemporaryDirectory() as tmp:
                 try:
                     self.renderer.render(records, policy_rev, Path(tmp) / "out", env=wiring)

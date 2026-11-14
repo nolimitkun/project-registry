@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 import time
 import sys
 import tempfile
@@ -44,8 +45,14 @@ class KagentWiring:
         # absolute: gen-projects.py runs in another directory (a copy of the policy repo)
         self.repo, self.ref, self.cache, self.ttl = repo, ref, cache.resolve(), ttl
         self.fetched = 0.0
+        # the API answers in threads: one refresh of the shared checkout at a time
+        self.lock = threading.Lock()
 
     def env(self) -> dict[str, str]:
+        with self.lock:
+            return self._env()
+
+    def _env(self) -> dict[str, str]:
         work = self.cache / "kagent-wiring"
         if time.time() - self.fetched > self.ttl or not (work / ".git").exists():
             if not (work / ".git").exists():

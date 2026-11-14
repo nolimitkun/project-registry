@@ -403,3 +403,14 @@ def test_a_proposed_kagent_agent_is_checked_against_the_deployment_repos_wiring(
     # a project change doesn't depend on the wiring
     assert reg.submit(ALICE, "project", "admin", "update",
                       api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))["state"] == "pending_approval"
+
+
+def test_concurrent_agent_proposals_share_one_wiring_refresh(world, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from registry import render as rmod
+    wiring = rmod.KagentWiring(os.environ.get("KAGENT_WIRING_REPO",
+                                              "https://github.com/nolimitkun/mini-platform-deployment.git"),
+                               "main", tmp_path, ttl=0)          # every call refreshes
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(lambda _: wiring.env(), range(16)))
+    assert all(Path(r["KAGENT_VALUES"]).exists() for r in results)
