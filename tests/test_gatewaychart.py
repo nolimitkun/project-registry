@@ -1,5 +1,6 @@
 import io
 import tarfile
+from pathlib import Path
 
 import yaml
 
@@ -8,18 +9,27 @@ from tests.test_bundles import FakeS3
 
 
 class Checkouts:
+    """Policy commits in directories, and a gen-catalog.py stand-in: the model records as the
+    chart's catalog."""
     def __init__(self, root):
         self.root = root
 
     def checkout(self, rev):
         return self.root / rev
 
+    def render(self, records, rev, out, also=None):
+        catalog = {"models": [{"name": m, "provider": "Deepseek"} for m in sorted(records.get("model") or {})]}
+        for dst in (also or {}).values():
+            Path(dst).write_text(yaml.safe_dump({"catalog": catalog}))
 
-def policy_commit(root, rev, models, with_chart=True):
+
+def records(*models):
+    return {"model": {m: {"placement": "external"} for m in models}}
+
+
+def policy_commit(root, rev, models=(), with_chart=True):
     work = root / rev
-    (work / "generated").mkdir(parents=True)
-    (work / "generated" / "agentgateway-catalog.yaml").write_text(
-        yaml.safe_dump({"catalog": {"models": [{"name": m, "provider": "Deepseek"} for m in models]}}))
+    work.mkdir(parents=True)
     if with_chart:
         chart = work / "charts" / "gateway-models"
         (chart / "templates").mkdir(parents=True)
@@ -36,11 +46,11 @@ def unpack(s3, key):
 def test_the_active_policy_is_published_once_as_the_newest_version(tmp_path):
     s3, renderer = FakeS3(), Checkouts(tmp_path)
     repo = gatewaychart.HelmRepo(s3, "gateway-models")
-    policy_commit(tmp_path, "a" * 40, ["m1"])
-    assert gatewaychart.ensure(repo, renderer, "a" * 40) == "1.0.1"
-    assert gatewaychart.ensure(repo, renderer, "a" * 40) is None            # already the newest
-    policy_commit(tmp_path, "b" * 40, ["m1", "m2"])
-    assert gatewaychart.ensure(repo, renderer, "b" * 40) == "1.0.2"
+    policy_commit(tmp_path, "a" * 40)
+    assert gatewaychart.ensure(repo, renderer, "a" * 40, records("m1")) == "1.0.1"
+    assert gatewaychart.ensure(repo, renderer, "a" * 40, records("m1")) is None     # already the newest
+    policy_commit(tmp_path, "b" * 40)
+    assert gatewaychart.ensure(repo, renderer, "b" * 40, records("m1", "m2")) == "1.0.2"
     index = yaml.safe_load(s3.objects["index.yaml"])
     versions = [e["version"] for e in index["entries"]["gateway-models"]]
     assert versions == ["1.0.2", "1.0.1"]                                   # newest first
@@ -57,16 +67,25 @@ def test_the_active_policy_is_published_once_as_the_newest_version(tmp_path):
 
 def test_a_policy_commit_without_the_chart_publishes_nothing(tmp_path):
     s3, renderer = FakeS3(), Checkouts(tmp_path)
-    policy_commit(tmp_path, "c" * 40, ["m1"], with_chart=False)
-    assert gatewaychart.ensure(gatewaychart.HelmRepo(s3, "gateway-models"), renderer, "c" * 40) is None
+    policy_commit(tmp_path, "c" * 40, with_chart=False)
+    assert gatewaychart.ensure(gatewaychart.HelmRepo(s3, "gateway-models"), renderer, "c" * 40, records("m1")) is None
     assert "index.yaml" not in s3.objects
 
 
 def test_a_chart_published_without_a_catalog_digest_is_republished(tmp_path):
     s3, renderer = FakeS3(), Checkouts(tmp_path)
     repo = gatewaychart.HelmRepo(s3, "gateway-models")
-    policy_commit(tmp_path, "d" * 40, ["m1"])
+    policy_commit(tmp_path, "d" * 40)
     chart = tmp_path / ("d" * 40) / "charts" / "gateway-models"
     repo.publish(chart, {"catalog": {}}, "d" * 12, {gatewaychart.POLICY_ANNOTATION: "d" * 40})   # before the digest
-    assert gatewaychart.ensure(repo, renderer, "d" * 40) == "1.0.2"
-    assert gatewaychart.ensure(repo, renderer, "d" * 40) is None
+    assert gatewaychart.ensure(repo, renderer, "d" * 40, records("m1")) == "1.0.2"
+    assert gatewaychart.ensure(repo, renderer, "d" * 40, records("m1")) is None
+
+
+def test_a_catalog_change_alone_republishes_and_no_catalog_publishes_nothing(tmp_path):
+    s3, renderer = FakeS3(), Checkouts(tmp_path)
+    repo = gatewaychart.HelmRepo(s3, "gateway-models")
+    policy_commit(tmp_path, "e" * 40)
+    assert gatewaychart.ensure(repo, renderer, "e" * 40, {}) is None             # no records: nothing to route
+    assert gatewaychart.ensure(repo, renderer, "e" * 40, records("m1")) == "1.0.1"
+    assert gatewaychart.ensure(repo, renderer, "e" * 40, records("m1", "m3")) == "1.0.2"   # same policy commit

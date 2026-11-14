@@ -387,18 +387,24 @@ def test_a_renderer_change_is_not_skipped_even_if_todays_records_render_the_same
     assert ch["state"] == "pending_approval" and ch["replay_report"]["records_change"] is False
 
 
-def test_a_commit_from_where_the_policy_lived_before_is_still_rendered(world, tmp_path):
-    # the policy moves to a new repository (new history): its active commit is only in the old one
-    import shutil
-    from registry import render as rmod
-    new = tmp_path / "new"
-    shutil.copytree(world["repo"], new, ignore=shutil.ignore_patterns(".git"))
-    git("init", "-q", "-b", "main", cwd=new)
-    git("add", "-A", cwd=new)
-    git("commit", "-qm", "moved here", cwd=new)
-    old_sha = world["first"]
-    alone = rmod.Renderer(str(new), tmp_path / "c1")
-    with pytest.raises(subprocess.CalledProcessError):
-        alone.checkout(old_sha)
-    both = rmod.Renderer(str(new), tmp_path / "c2", fallbacks=[str(world["repo"])])
-    assert (both.checkout(old_sha) / "scripts" / "gen-projects.py").exists()
+def test_a_file_not_known_to_be_inert_costs_an_approval(world):
+    # nothing OPA loads changes, but a file nobody listed may matter (a schema, the chart):
+    # filed for approval rather than skipped and silently never applied
+    db, watch = world["db"], world["watch"]
+    (world["repo"] / "charts").mkdir()
+    (world["repo"] / "charts" / "values.yaml").write_text("routes: []\n")
+    (world["repo"] / "docs").mkdir()
+    (world["repo"] / "docs" / "notes.md").write_text("inert\n")
+    git("add", "-A", cwd=world["repo"])
+    git("commit", "-qm", "a chart and a doc", cwd=world["repo"])
+    cid = watch.propose()
+    with db.tx() as c:
+        ch = c.execute("select state, replay_report from change_request where id = %s", (cid,)).fetchone()
+    assert ch["state"] == "pending_approval" and ch["replay_report"]["records_change"] is False
+
+
+def test_inert_paths():
+    from registry.policy import inert
+    assert all(map(inert, ["README.md", "docs/a/b.md", ".github/workflows/ci.yml", "fixtures/records.yaml"]))
+    assert not any(map(inert, ["scripts/gen-projects.py", "projects/schema.json", "charts/gateway-models/values.yaml",
+                               "policies/gateway/authz.rego", "policies/gateway/README.txt"]))

@@ -3,7 +3,7 @@
 The policy repository has the chart (charts/gateway-models: an AgentgatewayModel per
 model, the auto models, the Google API routes). The catalog it is templated over is
 the registry's catalog records, rendered by the policy's gen-catalog.py at the active
-commit (a commit from before the catalog moved here: its generated/agentgateway-catalog.yaml).
+commit.
 The publisher packages the chart at that commit with the catalog as its values, whenever
 either changes, and publishes it to a Helm repository in a bucket of its own (index.yaml
 next to the charts); the deployment repo's Argo CD application installs the newest
@@ -27,7 +27,7 @@ import yaml
 log = logging.getLogger("gatewaychart")
 
 CHART = "charts/gateway-models"
-CATALOG = "generated/agentgateway-catalog.yaml"
+CATALOG = "generated/agentgateway-catalog.yaml"     # where gen-catalog.py writes the chart's values
 POLICY_ANNOTATION = "project-registry/policy-revision"
 CATALOG_ANNOTATION = "project-registry/catalog-digest"
 
@@ -88,18 +88,14 @@ class HelmRepo:
 
 def catalog_values(renderer, policy_rev: str, records: dict | None) -> dict | None:
     """The chart's catalog value: the registry's catalog records rendered at the policy commit
-    (gen-catalog.py), or, without such records, the commit's own generated file."""
+    (gen-catalog.py). None without catalog records (nothing to route)."""
     import tempfile
-    work = renderer.checkout(policy_rev)
-    if records and any(records.get(k) for k in ("model", "google_api", "tool", "catalog")):
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "catalog.yaml"
-            renderer.render(records, policy_rev, Path(tmp) / "bundle", also={CATALOG: out})
-            if out.exists():
-                return (yaml.safe_load(out.read_text()) or {}).get("catalog") or {}
-    if (work / CATALOG).exists():
-        return (yaml.safe_load((work / CATALOG).read_text()) or {}).get("catalog") or {}
-    return None
+    if not records or not any(records.get(k) for k in ("model", "google_api", "tool", "catalog")):
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "catalog.yaml"
+        renderer.render(records, policy_rev, Path(tmp) / "bundle", also={CATALOG: out})
+        return (yaml.safe_load(out.read_text()) or {}).get("catalog") or {} if out.exists() else None
 
 
 def ensure(repo: HelmRepo, renderer, policy_rev: str, records: dict | None = None) -> str | None:

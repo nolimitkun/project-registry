@@ -24,12 +24,8 @@ import yaml
 
 
 def renderer_from_env(env) -> "Renderer":
-    """The policy repository (POLICY_REPO; DEPLOY_REPO is its older name), the repositories
-    older policy commits may be in (POLICY_REPO_FALLBACKS, space-separated: where the policy
-    lived before), and a cache."""
-    repo = env.get("POLICY_REPO") or env["DEPLOY_REPO"]
-    return Renderer(repo, Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts",
-                    fallbacks=(env.get("POLICY_REPO_FALLBACKS") or "").split())
+    """The policy repository (POLICY_REPO) and a cache of its checkouts."""
+    return Renderer(env["POLICY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts")
 
 
 class KagentWiring:
@@ -79,10 +75,7 @@ def kagent_wiring_from_env(env) -> "KagentWiring | None":
 def write_catalog(work: Path, records: dict) -> None:
     """The catalog records, as the files gen-catalog.py reads: catalog/models.yaml (the
     settings' servingNamespaces and tasks, the models, the Google APIs) and catalog/tools.yaml
-    (the settings' MCP targets, the tools). Without catalog records the repo's own files stay:
-    a policy commit from before the catalog moved to the registry."""
-    if not any(records.get(k) for k in ("model", "google_api", "tool", "catalog")):
-        return
+    (the settings' MCP targets, the tools)."""
     settings = (records.get("catalog") or {}).get("settings") or {}
     (work / "catalog").mkdir(exist_ok=True)
     (work / "catalog" / "models.yaml").write_text(yaml.safe_dump({
@@ -95,23 +88,6 @@ def write_catalog(work: Path, records: dict) -> None:
         "tools": records.get("tool") or {}}, sort_keys=False))
 
 
-def read_catalog(work: Path) -> dict:
-    """The catalog files of a checkout as records (the inverse of write_catalog)."""
-    out = {"model": {}, "google_api": {}, "tool": {}, "catalog": {}}
-    models_file, tools_file = work / "catalog" / "models.yaml", work / "catalog" / "tools.yaml"
-    if not models_file.exists():
-        return out
-    models = yaml.safe_load(models_file.read_text()) or {}
-    tools = (yaml.safe_load(tools_file.read_text()) or {}) if tools_file.exists() else {}
-    out["model"] = models.get("models") or {}
-    out["google_api"] = models.get("googleApis") or {}
-    out["tool"] = tools.get("tools") or {}
-    out["catalog"] = {"settings": {"servingNamespaces": models.get("servingNamespaces") or [],
-                                   "tasks": models.get("tasks") or {},
-                                   "targets": tools.get("targets") or []}}
-    return out
-
-
 class RenderError(Exception):
     def __init__(self, errors: list[str]):
         super().__init__("; ".join(errors))
@@ -119,8 +95,8 @@ class RenderError(Exception):
 
 
 class Renderer:
-    def __init__(self, repo: str, cache: Path, fallbacks: list[str] | None = None):
-        self.repo, self.cache, self.fallbacks = repo, cache, list(fallbacks or [])
+    def __init__(self, repo: str, cache: Path):
+        self.repo, self.cache = repo, cache
         cache.mkdir(parents=True, exist_ok=True)
 
     def checkout(self, revision: str) -> Path:
@@ -128,15 +104,11 @@ class Renderer:
         if not (path / ".git").exists():
             tmp = Path(tempfile.mkdtemp(dir=self.cache))
             subprocess.run(["git", "init", "-q", str(tmp)], check=True)
-            # the policy's repository, or one it lived in before (an active or older commit)
-            for i, repo in enumerate([self.repo, *self.fallbacks]):
-                fetch = subprocess.run(["git", "-C", str(tmp), "fetch", "-q", "--depth", "1", repo, revision],
-                                       capture_output=True, text=True)
-                if fetch.returncode == 0:
-                    break
-                if i == len(self.fallbacks):
-                    shutil.rmtree(tmp, ignore_errors=True)
-                    raise subprocess.CalledProcessError(fetch.returncode, fetch.args, fetch.stdout, fetch.stderr)
+            fetch = subprocess.run(["git", "-C", str(tmp), "fetch", "-q", "--depth", "1", self.repo, revision],
+                                   capture_output=True, text=True)
+            if fetch.returncode != 0:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise subprocess.CalledProcessError(fetch.returncode, fetch.args, fetch.stdout, fetch.stderr)
             subprocess.run(["git", "-C", str(tmp), "checkout", "-q", "FETCH_HEAD"], check=True)
             tmp.rename(path)
         return path
