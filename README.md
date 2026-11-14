@@ -1,16 +1,16 @@
 # project-registry
 
-The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway: phase 2 of its multi-project policy, designed in [docs/project-registry.md](https://github.com/nolimitkun/mini-platform-deployment/blob/main/docs/project-registry.md).
+The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway: phase 2 of its multi-project policy, designed in [docs/design.md](docs/design.md).
 
 The registry publishes both of the gateway's OPA bundles, and every change to either is a change request with approvals, a replay report, activation tracking and rollback:
 
 - **project data** (`gateway-projects`): projects, their agents and exceptions. They live only here, in Postgres; Git has their schema and the script that renders them, not a copy. They change in the portal or through the API;
-- **policy** (`gateway-policy`): the Rego, written and reviewed in Git. A new commit on the branch becomes a change request here, and OPA loads it only once it is approved.
+- **policy** (`gateway-policy`): the Rego, written and reviewed in Git ([nolimitkun/gateway-policy](https://github.com/nolimitkun/gateway-policy)). A new commit on the branch becomes a change request here, and OPA loads it only once it is approved.
 
 A project data change goes like this:
 
 1. **Validation.** The registry renders the whole data bundle with the change applied, using the platform's own `scripts/gen-projects.py` at the commit of the active policy bundle. Schema errors and cross-file errors come back before anyone is asked to approve.
-2. **Approvals.** Who has to approve is decided by policy: the registry asks OPA for `data.portal.required_approvals` (Rego in the deployment repo). The roles are:
+2. **Approvals.** Who has to approve is decided by policy: the registry asks OPA for `data.portal.required_approvals` (Rego in [gateway-policy](https://github.com/nolimitkun/gateway-policy)). The roles are:
 
    | Role | Who holds it |
    |---|---|
@@ -79,7 +79,7 @@ People log in to Keycloak with the authorization code flow and PKCE, through the
 
 OPA verifies the result like any bundle signed with `--signing-key`, using the public key and the key id (`registry/bundles.py`).
 
-The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle only with the key its config names for it, so a rotation moves the version, the key id (`SIGNING_KEYID`) and OPA's config in one change. When an active bundle is signed with another key, the publisher signs it again: the same commit, or the same records, with no approval. The runbook is in the deployment repo's `docs/project-registry.md`.
+The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle only with the key its config names for it, so a rotation moves the version, the key id (`SIGNING_KEYID`) and OPA's config in one change. When an active bundle is signed with another key, the publisher signs it again: the same commit, or the same records, with no approval. The runbook is in this repo's `docs/design.md`.
 
 ## Layout
 
@@ -93,7 +93,7 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 | `registry/snapshot.py` | the daily snapshot of the records into the bundle store |
 | `registry/importer.py` | the first load of an empty registry: the latest snapshot, or the seed |
 | `registry/bundles.py` | build, sign, verify; the versioned bundle store (S3/MinIO) |
-| `registry/render.py` | rendering through the deployment repo's `gen-projects.py` |
+| `registry/render.py` | rendering through the policy repo's `gen-projects.py` (`POLICY_REPO`) |
 | `registry/replay.py` | decision replay |
 | `registry/auth.py` | Keycloak access tokens (realm JWKS, `azp`, `groups` claim) |
 
@@ -104,8 +104,8 @@ python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 TEST_DATABASE_URL=postgresql://postgres:test@localhost:5432/registry .venv/bin/pytest -q
 ```
 
-The tests need `opa` on `PATH`. The flow tests need a disposable Postgres. They fetch the deployment repo from GitHub; to use a local checkout, set `DEPLOY_REPO` and `DEPLOY_REVISION`.
+The tests need `opa` on `PATH`. The flow tests need a disposable Postgres. They fetch the policy repo (nolimitkun/gateway-policy) from GitHub; to use a local checkout, set `POLICY_REPO` and `POLICY_REVISION`.
 
 ## Deployment
 
-The `project-registry` application in the deployment repo deploys the API, the publisher, the daily export and its Postgres; the `opa-policy` application deploys OPA. The image is `ghcr.io/nolimitkun/project-registry`.
+The `project-registry` application in the deployment repo deploys the API, the publisher, the daily snapshot and its Postgres; the `opa-policy` application deploys OPA. The image is `ghcr.io/nolimitkun/project-registry`.

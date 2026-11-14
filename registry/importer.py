@@ -82,7 +82,7 @@ def main() -> None:
     import boto3
 
     from .bundles import Store
-    from .render import Renderer
+    from .render import renderer_from_env
     from .vault import TransitSigner, Vault
 
     p = argparse.ArgumentParser()
@@ -102,7 +102,7 @@ def main() -> None:
     run(db, store,
         TransitSigner(Vault(env["VAULT_ADDR"], env["VAULT_ROLE"]), env["TRANSIT_KEY"], env["SIGNING_KEYID"],
                       version=int(env["SIGNING_KEY_VERSION"]) if env.get("SIGNING_KEY_VERSION") else None),
-        Renderer(env["DEPLOY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts"), a.owner_group,
+        renderer_from_env(env), a.owner_group,
         records, source)
 
 

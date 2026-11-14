@@ -1,7 +1,7 @@
 """The registry API and its portal page. Every edit is a change request, proposed
 only by whom policy allows (OPA: data.portal.may_submit), validated by rendering
 the whole bundle with it, its approvals decided by policy
-(data.portal.required_approvals; both Rego in the deployment repo), approved by
+(data.portal.required_approvals; both Rego in the policy repo), approved by
 other people than its author (or withdrawn), then published by the publisher.
 Policy changes (kind `policy`, a commit of the Rego in Git) are filed by the
 publisher itself (policy.py) and approved here the same way.
@@ -27,7 +27,7 @@ from .auth import ROLE_GROUPS, User, current_user
 from . import bundles
 from .bundles import Store
 from .policy import same_data
-from .render import Renderer, RenderError
+from .render import Renderer, RenderError, renderer_from_env
 
 KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception"}
 PORTAL = Path(__file__).resolve().parent / "static" / "portal.html"
@@ -357,7 +357,7 @@ def create_app(reg: Registry) -> FastAPI:
     @app.get("/export")
     def export(user: User = Depends(current_user)):
         """Every record: {"project": {id: spec}, "agent": {...}, "exception": {...}}, each spec in
-        the format of the deployment repo's schemas (the format of the seed and the snapshots)."""
+        the format of the policy repo's schemas (the format of the seed and the snapshots)."""
         with reg.db.tx() as c:
             records = dbm.resources(c)
             active = c.execute("select revision from publication where state = 'active' "
@@ -473,7 +473,7 @@ def _from_env() -> FastAPI:
     db = dbm.DB(env["DATABASE_URL"])
     db.migrate()
     s3 = boto3.client("s3", endpoint_url=env["S3_ENDPOINT"], region_name=env.get("AWS_REGION", "us-east-1"))
-    return create_app(Registry(db, Renderer(env["DEPLOY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts"),
+    return create_app(Registry(db, renderer_from_env(env),
                                Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", "")), env["OPA_URL"]))
 
 

@@ -32,7 +32,7 @@ from . import activation
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .policy import PolicyWatch, same_data
-from .render import Renderer
+from .render import Renderer, renderer_from_env
 from .replay import fetch, replay
 
 log = logging.getLogger("publisher")
@@ -190,8 +190,10 @@ class Publisher:
             self._failed(ids, e, self.data_bundle)
             return None
 
-    # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in
-    AGENTREGISTRY_FILE = "minikube/gitops/agentregistry-catalog/files/agents.yaml"
+    # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in: in
+    # gateway-policy, or in a policy commit from before it (the deployment repo's path)
+    AGENTREGISTRY_FILES = ("generated/agentregistry-agents.yaml",
+                           "minikube/gitops/agentregistry-catalog/files/agents.yaml")
 
     def sync_agentregistry(self, url: str | None) -> int | None:
         """Applies the registered agents to agentregistry's catalog (/v0/apply: idempotent,
@@ -206,9 +208,11 @@ class Publisher:
         with self.db.tx() as c:
             records = dbm.resources(c)
         with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "agents.yaml"
-            self.renderer.render(records, policy_rev, Path(tmp) / "bundle", also={self.AGENTREGISTRY_FILE: out})
-            if not out.exists():
+            outs = [Path(tmp) / f"agents-{i}.yaml" for i in range(len(self.AGENTREGISTRY_FILES))]
+            self.renderer.render(records, policy_rev, Path(tmp) / "bundle",
+                                 also=dict(zip(self.AGENTREGISTRY_FILES, outs)))
+            out = next((o for o in outs if o.exists()), None)
+            if out is None:
                 return 0
             # one YAML document per entry; gen-projects.py opens with a comment-only one, which
             # agentregistry refuses as an entry without apiVersion
@@ -304,7 +308,7 @@ def main() -> None:
     store = Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", ""))
     signer = TransitSigner(Vault(env["VAULT_ADDR"], env["VAULT_ROLE"]), env["TRANSIT_KEY"], env["SIGNING_KEYID"],
                            version=int(env["SIGNING_KEY_VERSION"]) if env.get("SIGNING_KEY_VERSION") else None)
-    renderer = Renderer(env["DEPLOY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts")
+    renderer = renderer_from_env(env)
     loki, ns = env["LOKI_URL"], env.get("DECISION_LOG_NAMESPACE", "mini-platform")
     since, limit = env.get("REPLAY_SINCE", "24h"), int(env.get("REPLAY_LIMIT", "2000"))
     events = lambda: fetch(loki, ns, since, limit)                          # noqa: E731

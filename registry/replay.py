@@ -2,7 +2,7 @@
 
 The publisher's safety valve: a change may change decisions for the projects it
 touches, and for no other. The inputs come from OPA's decision log in Loki (the
-format scripts/policy-replay.py in the deployment repo reads). Each is evaluated
+format scripts/policy-replay.py in the policy repo reads). Each is evaluated
 twice under the active policy bundle, with the active data bundle and with the
 candidate, so only the data change shows: a policy or catalog change since the
 request was logged (which would flip verdicts for every project) is not blamed

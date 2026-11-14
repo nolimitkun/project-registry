@@ -1,7 +1,7 @@
-"""End to end on a real Postgres and the real gen-projects.py of the deployment repo.
+"""End to end on a real Postgres and the real gen-projects.py of the policy repo.
 
-Needs TEST_DATABASE_URL (a disposable database) and, optionally, DEPLOY_REPO
-(default: the public deployment repo) and DEPLOY_REVISION (default: its main).
+Needs TEST_DATABASE_URL (a disposable database) and, optionally, POLICY_REPO
+(default: nolimitkun/gateway-policy) and POLICY_REVISION (default: its main).
 """
 import json
 import os
@@ -19,7 +19,7 @@ from tests.test_bundles import OPA, FakeS3
 DSN = os.environ.get("TEST_DATABASE_URL")
 # The platform's own projects, as the project-registry chart seeds a new cluster with
 SEED = json.loads((Path(__file__).parent / "fixtures" / "seed.json").read_text())
-REPO = os.environ.get("DEPLOY_REPO", "https://github.com/nolimitkun/mini-platform-deployment.git")
+REPO = os.environ.get("POLICY_REPO", "https://github.com/nolimitkun/gateway-policy.git")
 pytestmark = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 
 ALICE = User("alice", {"platform-admins"})              # platform team, owner of every project
@@ -29,7 +29,7 @@ COST = User("cost", {"cost-owners"})
 
 
 def head(repo):
-    rev = os.environ.get("DEPLOY_REVISION")
+    rev = os.environ.get("POLICY_REVISION")
     if rev:
         return rev
     out = subprocess.run(["git", "ls-remote", repo, "refs/heads/main"], capture_output=True, text=True, check=True)
@@ -353,3 +353,30 @@ def test_the_registry_keeps_agentregistry_current(world, monkeypatch):
     import yaml
     docs = list(yaml.safe_load_all(body))
     assert len(docs) == 5 and all(d and d.get("apiVersion") for d in docs)   # no comment-only document
+
+
+def test_agentregistry_from_a_policy_commit_of_the_deployment_repo(world, monkeypatch):
+    # a policy commit from before gateway-policy writes the agents to the old path
+    db, store, pub = world["db"], world["store"], world["pub"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    real = pub.renderer.render
+
+    def old_layout(records, rev, out, also=None):
+        moved = {("minikube/gitops/agentregistry-catalog/files/agents.yaml" if k.startswith("generated/") else k): v
+                 for k, v in (also or {}).items()}
+        legacy = {k: v for k, v in moved.items() if k.startswith("minikube/")}
+        result = real(records, rev, out, also={"generated/agentregistry-agents.yaml": legacy[next(iter(legacy))]})
+        return result
+
+    monkeypatch.setattr(pub.renderer, "render", old_layout)
+    sent = []
+
+    class Resp:
+        text = '{"results":[{"status":"updated"}]}'
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(publisher.requests, "post", lambda url, data=None, headers=None, timeout=None:
+                        sent.append(data) or Resp())
+    assert pub.sync_agentregistry("http://agentregistry:12121") == 1 and b"kagent-k8s-agent" in sent[0]

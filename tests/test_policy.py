@@ -299,7 +299,7 @@ def test_a_format_change_the_old_policy_or_data_cant_take_is_refused(world):
 def test_policy_repo_must_be_the_deploy_repo(world, monkeypatch):
     monkeypatch.setenv("POLICY_REPO", "https://example.invalid/other.git")
     monkeypatch.setenv("OPA_URL", "http://opa")
-    with pytest.raises(SystemExit, match="POLICY_REPO must be DEPLOY_REPO"):
+    with pytest.raises(SystemExit, match="POLICY_REPO must be the renderer's repository"):
         policy.from_env(world["db"], world["store"], world["signer"], world["watch"].renderer, lambda: [])
 
 
@@ -385,3 +385,20 @@ def test_a_renderer_change_is_not_skipped_even_if_todays_records_render_the_same
     with db.tx() as c:
         ch = c.execute("select state, replay_report from change_request where id = %s", (cid,)).fetchone()
     assert ch["state"] == "pending_approval" and ch["replay_report"]["records_change"] is False
+
+
+def test_a_commit_from_where_the_policy_lived_before_is_still_rendered(world, tmp_path):
+    # the policy moves to a new repository (new history): its active commit is only in the old one
+    import shutil
+    from registry import render as rmod
+    new = tmp_path / "new"
+    shutil.copytree(world["repo"], new, ignore=shutil.ignore_patterns(".git"))
+    git("init", "-q", "-b", "main", cwd=new)
+    git("add", "-A", cwd=new)
+    git("commit", "-qm", "moved here", cwd=new)
+    old_sha = world["first"]
+    alone = rmod.Renderer(str(new), tmp_path / "c1")
+    with pytest.raises(subprocess.CalledProcessError):
+        alone.checkout(old_sha)
+    both = rmod.Renderer(str(new), tmp_path / "c2", fallbacks=[str(world["repo"])])
+    assert (both.checkout(old_sha) / "scripts" / "gen-projects.py").exists()
