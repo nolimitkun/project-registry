@@ -190,8 +190,10 @@ class Publisher:
             self._failed(ids, e, self.data_bundle)
             return None
 
-    # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in
-    AGENTREGISTRY_FILE = "generated/agentregistry-agents.yaml"
+    # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in: in
+    # gateway-policy, or in a policy commit from before it (the deployment repo's path)
+    AGENTREGISTRY_FILES = ("generated/agentregistry-agents.yaml",
+                           "minikube/gitops/agentregistry-catalog/files/agents.yaml")
 
     def sync_agentregistry(self, url: str | None) -> int | None:
         """Applies the registered agents to agentregistry's catalog (/v0/apply: idempotent,
@@ -206,9 +208,11 @@ class Publisher:
         with self.db.tx() as c:
             records = dbm.resources(c)
         with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "agents.yaml"
-            self.renderer.render(records, policy_rev, Path(tmp) / "bundle", also={self.AGENTREGISTRY_FILE: out})
-            if not out.exists():
+            outs = [Path(tmp) / f"agents-{i}.yaml" for i in range(len(self.AGENTREGISTRY_FILES))]
+            self.renderer.render(records, policy_rev, Path(tmp) / "bundle",
+                                 also=dict(zip(self.AGENTREGISTRY_FILES, outs)))
+            out = next((o for o in outs if o.exists()), None)
+            if out is None:
                 return 0
             # one YAML document per entry; gen-projects.py opens with a comment-only one, which
             # agentregistry refuses as an entry without apiVersion
