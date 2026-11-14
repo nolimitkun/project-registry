@@ -84,7 +84,7 @@ def world(tmp_path, monkeypatch):
     store = bundles.Store(FakeS3(), "b")
     signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "k1")
     renderer = render.Renderer(str(repo), tmp_path / "checkouts")
-    source = policy.PolicySource(str(repo), "main", renderer, opa=OPA)
+    source = policy.PolicySource("main", renderer, opa=OPA)
     events = [{"input": {"p": "a"}, "result": {"allowed": True}, "time": "t"},
               {"input": {"p": "b"}, "result": {"allowed": False}, "time": "t"}]
     asked = []
@@ -283,3 +283,21 @@ def test_same_data_compares_data_not_files(tmp_path):
     assert policy.same_data(src, tmp_path / "b.tar.gz")
     (src / "projects" / "a" / "data.json").write_text('{"on": true, "n": {"x": 2}}')
     assert not policy.same_data(src, tmp_path / "b.tar.gz")
+
+
+def test_a_format_change_the_old_policy_or_data_cant_take_is_refused(world):
+    db, store, first = world["db"], world["store"], world["first"]
+    # the new rule needs the new format: the new policy with the old data denies project a
+    sha = commit(world["repo"], "rule reads the new format", fmt=2, rule="data.projects[input.p].format == 2",
+                 test=TEST.replace('{"a": {"on": true}}', '{"a": {"format": 2}}'))
+    cid = world["watch"].propose()
+    ch = state(db, cid)
+    assert ch["state"] == "failed" and "Stage it" in ch["error"] and sha
+    assert store.active("gateway-policy") == first
+
+
+def test_policy_repo_must_be_the_deploy_repo(world, monkeypatch):
+    monkeypatch.setenv("POLICY_REPO", "https://example.invalid/other.git")
+    monkeypatch.setenv("OPA_URL", "http://opa")
+    with pytest.raises(SystemExit, match="POLICY_REPO must be DEPLOY_REPO"):
+        policy.from_env(world["db"], world["store"], world["signer"], world["watch"].renderer, lambda: [])

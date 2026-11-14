@@ -104,6 +104,21 @@ def replay_all(events: list[dict], active: list[Path], candidate: list[Path], op
     return out
 
 
+def replay_mixed(events: list[dict], active: list[Path], candidate: list[Path], mixes: list[list[Path]],
+                 opa: str = "opa") -> int:
+    """How many requests some mix of the bundles decides differently from both the active and
+    the candidate set (the allowed verdict). Raises RuntimeError if a mix doesn't evaluate,
+    which includes loading: it runs even without events."""
+    inputs = [e["input"] for e in events]
+    before, after = evaluate(inputs, active, opa), evaluate(inputs, candidate, opa)
+    odd = set()
+    for mix in mixes:
+        for i, d in enumerate(evaluate(inputs, mix, opa)):
+            if bool(d.get("allowed")) not in (bool(before[i].get("allowed")), bool(after[i].get("allowed"))):
+                odd.add(i)
+    return len(odd)
+
+
 def replay(events: list[dict], policy: Path, active_data: Path, candidate_data: Path,
            allowed_projects: set[str], opa: str = "opa") -> dict:
     if not events:

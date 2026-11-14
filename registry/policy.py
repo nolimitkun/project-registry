@@ -35,7 +35,7 @@ from . import approvals
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .render import Renderer, RenderError
-from .replay import replay_all
+from .replay import replay_all, replay_mixed
 
 log = logging.getLogger("policy")
 ACTOR = "policy-watch"
@@ -46,11 +46,13 @@ class Rejected(Exception):
 
 
 class PolicySource:
-    """The branch the policy follows, and builds of its commits."""
+    """The branch the policy follows, and builds of its commits. The repository is the
+    renderer's: the records are rendered with gen-projects.py at the policy's commit, so
+    the policy and the data format come from one repository."""
 
-    def __init__(self, repo: str, ref: str, renderer: Renderer, policy_dir: str = "policies/gateway",
+    def __init__(self, ref: str, renderer: Renderer, policy_dir: str = "policies/gateway",
                  test_dirs: tuple[str, ...] = ("policies/gateway", "policies/gateway-projects"), opa: str = "opa"):
-        self.repo, self.ref, self.renderer = repo, ref, renderer
+        self.repo, self.ref, self.renderer = renderer.repo, ref, renderer
         self.policy_dir, self.test_dirs, self.opa = policy_dir, test_dirs, opa
 
     def head(self) -> str:
@@ -224,14 +226,32 @@ class PolicyWatch:
                 new_data = self.renderer.render(records, sha, tmp / "gateway-projects")
             except RenderError as e:
                 raise Rejected(f"the registry's records don't render at {sha[:12]}: {e}") from e
-            report = replay_all(self.events(), [old_policy, old_data], [new_policy, new_data], self.opa)
+            events = self.events()
+            report = replay_all(events, [old_policy, old_data], [new_policy, new_data], self.opa)
             report["records_change"] = not same_data(new_data, old_data)
+            if report["records_change"]:
+                # Each OPA loads the two bundles on its own, so for a while it may run the old
+                # policy with the new data, or the new policy with the old. Neither may decide
+                # a request differently from both the old and the new pair.
+                try:
+                    unsafe = replay_mixed(events, [old_policy, old_data], [new_policy, new_data],
+                                          [[old_policy, new_data], [new_policy, old_data]], self.opa)
+                except RuntimeError as e:
+                    unsafe, report["mixed_error"] = -1, str(e)[-500:]
+                report["mixed_unsafe"] = unsafe
+                if unsafe:
+                    raise Rejected(
+                        f"the data format changes at {sha[:12]} and the old policy with the new data, or the new "
+                        f"policy with the old data, decides differently ({'fails to evaluate' if unsafe < 0 else unsafe})."
+                        " Stage it: first a policy that reads both formats, then the format change.")
             return report
 
 
 def from_env(db: dbm.DB, store: Store, signer, renderer: Renderer, events) -> PolicyWatch:
     env = os.environ
-    source = PolicySource(env.get("POLICY_REPO", env["DEPLOY_REPO"]), env.get("POLICY_REF", "main"), renderer,
+    if env.get("POLICY_REPO") and env["POLICY_REPO"] != renderer.repo:
+        raise SystemExit("POLICY_REPO must be DEPLOY_REPO: the policy and the data format come from one repository")
+    source = PolicySource(env.get("POLICY_REF", "main"), renderer,
                           env.get("POLICY_DIR", "policies/gateway"),
                           tuple(env.get("POLICY_TEST_DIRS", "policies/gateway,policies/gateway-projects").split(",")))
     return PolicyWatch(db, store, signer, renderer, source, events, env["OPA_URL"])
