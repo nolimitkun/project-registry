@@ -53,21 +53,25 @@ def record(c, report: dict) -> None:
               (labels["id"], labels.get("pod"), Jsonb(bundles)))
 
 
-def activate_due(c, data_bundle: str, pods: set[str] | None, window: str = "5 minutes") -> list[str]:
-    """Marks active every published revision all OPAs have loaded; returns them."""
+def reports(c, pods: set[str] | None, window: str = "5 minutes") -> list[dict]:
+    """The latest report of every OPA that counts; [] unless every one of them has reported."""
     if pods is not None:
         if not pods:
             return []
         rows = c.execute("""select distinct on (pod) pod, bundles from opa_status where pod = any(%s)
                             order by pod, at desc""", (list(pods),)).fetchall()
-        if {r["pod"] for r in rows} != pods:
-            return []                  # a ready OPA hasn't reported yet
-    else:
-        rows = c.execute("select bundles from opa_status where at > now() - %s::interval", (window,)).fetchall()
-        if not rows:
-            return []
+        return rows if {r["pod"] for r in rows} == pods else []    # a ready OPA hasn't reported yet
+    return c.execute("select bundles from opa_status where at > now() - %s::interval", (window,)).fetchall()
+
+
+def activate_due(c, data_bundle: str, pods: set[str] | None, window: str = "5 minutes",
+                 policy_bundle: str = "gateway-policy") -> list[str]:
+    """Marks active every published revision all OPAs have loaded, of both bundles; returns them."""
+    rows = reports(c, pods, window)
+    if not rows:
+        return []
+    done = _activate_policy(c, policy_bundle, rows)
     everywhere = min(r["bundles"].get(data_bundle) or "" for r in rows)   # projects-NNNNNNNN sorts like its number
-    done = []
     for pub in c.execute("""select revision, change_ids from publication
                             where active_at is null and state = 'active' and revision <= %s""",
                          (everywhere,)).fetchall():
@@ -77,3 +81,17 @@ def activate_due(c, data_bundle: str, pods: set[str] | None, window: str = "5 mi
         dbm.audit(c, "opa", "active", f"{data_bundle}@{pub['revision']}", None, {"changes": pub["change_ids"]})
         done.append(pub["revision"])
     return done
+
+
+def _activate_policy(c, policy_bundle: str, rows: list[dict]) -> list[str]:
+    """The active policy publication, once every OPA reports its commit (commits don't sort)."""
+    pub = c.execute("""select revision, change_id from policy_publication
+                       where state = 'active' and active_at is null""").fetchone()
+    if not pub or any(r["bundles"].get(policy_bundle) != pub["revision"] for r in rows):
+        return []
+    c.execute("update policy_publication set active_at = now() where revision = %s", (pub["revision"],))
+    if pub["change_id"]:
+        c.execute("update change_request set state = 'active', updated_at = now() "
+                  "where id = %s and state = 'publishing'", (pub["change_id"],))
+    dbm.audit(c, "opa", "active", f"{policy_bundle}@{pub['revision']}", None, {"change": pub["change_id"]})
+    return [pub["revision"]]

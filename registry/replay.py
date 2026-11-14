@@ -8,6 +8,10 @@ candidate, so only the data change shows: a policy or catalog change since the
 request was logged (which would flip verdicts for every project) is not blamed
 on it. Only the `allowed` verdict is compared, since the model behind `auto` can
 change from hour to hour.
+
+A policy change (replay_all) may change any decision, so nothing is held back: the
+report, under the active bundles and under the new policy with the records
+rendered at its commit, is for its approvers.
 """
 from __future__ import annotations
 
@@ -60,19 +64,38 @@ def evaluate(inputs: list[dict], bundles: list[Path], opa: str = "opa") -> list[
     return json.loads(out.stdout)["result"][0]["expressions"][0]["value"]
 
 
-def compare(events: list[dict], before: list[dict], after: list[dict], allowed_projects: set[str]) -> dict:
-    flips, unexpected = [], []
+def flips(events: list[dict], before: list[dict], after: list[dict]) -> list[dict]:
+    out = []
     for e, old, new in zip(events, before, after):
         was, now = bool(old.get("allowed")), bool(new.get("allowed"))
-        if was == now:
-            continue
-        flip = {"project": project_of(e), "before": was, "after": now, "time": e.get("time"),
-                "path": e["input"].get("attributes", {}).get("request", {}).get("http", {}).get("path"),
-                "model": (e["input"].get("parsed_body") or {}).get("model")}
-        (flips if flip["project"] in allowed_projects else unexpected).append(flip)
-    return {"replayed": len(events), "changed_for_changed_projects": len(flips),
-            "changed_for_other_projects": len(unexpected), "examples": (unexpected + flips)[:20],
+        if was != now:
+            out.append({"project": project_of(e), "before": was, "after": now, "time": e.get("time"),
+                        "path": e["input"].get("attributes", {}).get("request", {}).get("http", {}).get("path"),
+                        "model": (e["input"].get("parsed_body") or {}).get("model")})
+    return out
+
+
+def compare(events: list[dict], before: list[dict], after: list[dict], allowed_projects: set[str]) -> dict:
+    flipped = flips(events, before, after)
+    expected = [f for f in flipped if f["project"] in allowed_projects]
+    unexpected = [f for f in flipped if f["project"] not in allowed_projects]
+    return {"replayed": len(events), "changed_for_changed_projects": len(expected),
+            "changed_for_other_projects": len(unexpected), "examples": (unexpected + expected)[:20],
             "ok": not unexpected}
+
+
+def replay_all(events: list[dict], active: list[Path], candidate: list[Path], opa: str = "opa") -> dict:
+    """A policy change: any request may change, so nothing is held back; the report is for
+    the approvers. active / candidate: the bundles OPA would load, before and after."""
+    out = {"kind": "policy", "replayed": len(events), "changed": 0, "allowed_to_denied": 0,
+           "denied_to_allowed": 0, "examples": [], "ok": True}
+    if not events:
+        return out
+    inputs = [e["input"] for e in events]
+    flipped = flips(events, evaluate(inputs, active, opa), evaluate(inputs, candidate, opa))
+    out.update(changed=len(flipped), allowed_to_denied=sum(1 for f in flipped if f["before"]),
+               denied_to_allowed=sum(1 for f in flipped if not f["before"]), examples=flipped[:20])
+    return out
 
 
 def replay(events: list[dict], policy: Path, active_data: Path, candidate_data: Path,

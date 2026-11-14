@@ -2,7 +2,12 @@
 
 The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway: phase 2 of its multi-project policy, designed in [docs/project-registry.md](https://github.com/nolimitkun/mini-platform-deployment/blob/main/docs/project-registry.md).
 
-Projects, their agents and exceptions live in Postgres instead of `projects/*.yaml`. Every edit is a change request:
+The registry publishes both of the gateway's OPA bundles, and every change to either is a change request with approvals, a replay report, activation tracking and rollback:
+
+- **project data** (`gateway-projects`): projects, their agents and exceptions, kept in Postgres instead of `projects/*.yaml`, changed in the portal or through the API;
+- **policy** (`gateway-policy`): the Rego, written and reviewed in Git. A new commit on the branch becomes a change request here, and OPA loads it only once it is approved.
+
+A project data change goes like this:
 
 1. **Validation.** The registry renders the whole data bundle with the change applied, using the platform's own `scripts/gen-projects.py` at the commit of the active policy bundle. Schema errors and cross-file errors come back before anyone is asked to approve.
 2. **Approvals.** Who has to approve is decided by policy: the registry asks OPA for `data.portal.required_approvals` (Rego in the deployment repo). The roles are:
@@ -24,7 +29,19 @@ Projects, their agents and exceptions live in Postgres instead of `projects/*.ya
    All of this runs in one database transaction.
 4. **Activation.** A change is `active` once every ready OPA pod has reported its bundle revision. OPA's status plugin posts to `/opa/status`, with the pod name as a label. The ready pods come from the OPA Service's EndpointSlices, and the check also runs on every round of the publisher (`registry/activation.py`).
 
-Rollback activates an earlier revision and restores the records it was rendered from. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
+A policy change (`registry/policy.py`) goes like this. Every minute the publisher checks the branch. For a new commit it:
+
+1. runs `opa test`;
+2. builds and signs the bundle, but doesn't activate it;
+3. renders the records with that commit's `gen-projects.py`;
+4. replays recent decisions under the active bundles and under the new ones;
+5. files the change, kind `policy`, object the commit.
+
+The approvers see the commit, a link to its diff and how many decisions would change. The platform team approves every policy change, plus whatever `portal.rego` asks for. Once it is approved, the publisher activates the records rendered at that commit, if they differ, and then the policy.
+
+A newer commit supersedes a policy change still waiting. A commit whose test fails, or under which the records don't render, is filed as `failed` and nothing is published. On a store with no policy at all (a new cluster), the branch's head is published without a change.
+
+Rollback activates an earlier revision. For project data it also restores the records that revision was rendered from; for the policy it activates an earlier commit, which must be signed with the current key. A change not yet published can be withdrawn by its author or the platform team, for example one that nobody but its author could approve.
 
 A daily job (`python -m registry.gitexport`) writes the records back to the deployment repo through that repo's `scripts/registry-export.py` and opens one pull request (branch `registry-export`), or updates the open one; it needs a fine-grained GitHub token for that repo, read from the environment through a git credential helper so it never appears in a command line.
 
@@ -35,11 +52,9 @@ A daily job (`python -m registry.gitexport`) writes the records back to the depl
 - projects, and their changes;
 - proposing a change (a JSON merge patch) or a new project;
 - change requests with their diff, approvals and replay report, and approve, reject and withdraw;
-- the published bundles, with rollback for the platform team.
+- the published bundles of both kinds, with rollback for the platform team.
 
 People log in to Keycloak with the authorization code flow and PKCE, through the public client `project-registry`; there is no client secret. `/opa/status` and `/metrics` refuse requests that came through the ingress.
-
-The same image also builds the **policy bundle** (`python -m registry.policybuild`): when the Git branch moves, it runs `opa test`, then builds and signs. This replaces OPA Control Plane.
 
 ## Signing
 
@@ -51,7 +66,7 @@ The same image also builds the **policy bundle** (`python -m registry.policybuil
 
 OPA verifies the result like any bundle signed with `--signing-key`, using the public key and the key id (`registry/bundles.py`).
 
-The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle only with the key its config names for it, so a rotation moves the version, the key id (`SIGNING_KEYID`) and OPA's config in one change. When the active bundle is signed with another key, the policy build and the publisher sign it again: the same commit and the same records. The runbook is in the deployment repo's `docs/project-registry.md`.
+The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle only with the key its config names for it, so a rotation moves the version, the key id (`SIGNING_KEYID`) and OPA's config in one change. When an active bundle is signed with another key, the publisher signs it again: the same commit, or the same records, with no approval. The runbook is in the deployment repo's `docs/project-registry.md`.
 
 ## Layout
 
@@ -59,7 +74,10 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 |---|---|
 | `registry/api.py` | REST API (FastAPI): records, change requests, approvals, rollback, OPA status |
 | `registry/publisher.py` | the publish loop |
-| `registry/policybuild.py` | the policy bundle build (a CronJob) |
+| `registry/policy.py` | policy commits from Git as change requests: test, build, replay, file |
+| `registry/approvals.py` | who approves: `data.portal.required_approvals` on OPA |
+| `registry/activation.py` | when a published revision is active on every ready OPA pod |
+| `registry/gitexport.py` | the daily export of the records to Git |
 | `registry/importer.py` | the first load from `projects/*.yaml`, with a byte-for-byte check against Git |
 | `registry/bundles.py` | build, sign, verify; the versioned bundle store (S3/MinIO) |
 | `registry/render.py` | rendering through the deployment repo's `gen-projects.py` |
@@ -77,4 +95,4 @@ The tests need `opa` on `PATH`. The flow tests need a disposable Postgres. They 
 
 ## Deployment
 
-The `project-registry` application in the deployment repo deploys the API, the publisher and its Postgres, and the `opa-policy` application deploys the policy build CronJob. The image is `ghcr.io/nolimitkun/project-registry`.
+The `project-registry` application in the deployment repo deploys the API, the publisher, the daily export and its Postgres; the `opa-policy` application deploys OPA. The image is `ghcr.io/nolimitkun/project-registry`.

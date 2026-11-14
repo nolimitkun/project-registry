@@ -41,6 +41,11 @@ create table if not exists publication (
   policy_revision text not null,
   records jsonb not null,                  -- the records it was rendered from: a rollback restores them
   created_at timestamptz not null default now(), active_at timestamptz);
+-- the gateway-policy bundle's publications: a Git commit each (policy.py)
+create table if not exists policy_publication (
+  revision text primary key, seq bigint not null, change_id bigint references change_request(id),
+  state text not null check (state in ('active', 'superseded', 'rolled_back')),
+  created_at timestamptz not null default now(), active_at timestamptz);
 create table if not exists opa_status (instance_id text primary key, bundles jsonb not null, at timestamptz not null);
 alter table opa_status add column if not exists pod text;
 create table if not exists audit_log (

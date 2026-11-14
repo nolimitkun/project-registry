@@ -1,13 +1,17 @@
-"""Publishes approved changes as a signed gateway-projects bundle.
+"""Publishes approved changes: both of OPA's bundles, signed.
 
     python -m registry.publisher
 
-Loop: take the approved changes from the outbox (at most one publish every
-MIN_INTERVAL seconds, so changes batch), apply them to the records, render the
-bundle directory with gen-projects.py at the active policy revision, replay
-recent decisions, build and sign, upload, activate. All of it in one database
-transaction: if any step fails, no record changes, the changes are marked
-`failed` with the reason, and OPA keeps the active bundle.
+Project data (gateway-projects): take the approved changes from the outbox (at
+most one publish every MIN_INTERVAL seconds, so changes batch), apply them to the
+records, render the bundle directory with gen-projects.py at the active policy
+revision, replay recent decisions, build and sign, upload, activate. All of it in
+one database transaction: if any step fails, no record changes, the changes are
+marked `failed` with the reason, and OPA keeps the active bundle.
+
+Policy (gateway-policy): every POLICY_POLL seconds the loop files the policy
+branch's new commit as a change request (policy.py); an approved one is published
+here, with the records rendered at its commit when they differ.
 
 A change becomes `active` once every ready OPA pod reports its revision
 (activation.py, on every OPA report and every round of this loop).
@@ -25,6 +29,7 @@ from psycopg.types.json import Jsonb
 from . import activation
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
+from .policy import PolicyWatch, same_data
 from .render import Renderer
 from .replay import fetch, replay
 
@@ -46,19 +51,89 @@ def projects_touched(change: dict) -> set[str]:
 
 class Publisher:
     def __init__(self, db: dbm.DB, store: Store, signer, renderer: Renderer, events,
-                 policy_bundle="gateway-policy", data_bundle="gateway-projects", opa="opa"):
+                 policy_bundle="gateway-policy", data_bundle="gateway-projects", opa="opa",
+                 policy: PolicyWatch | None = None):
         self.db, self.store, self.signer, self.renderer = db, store, signer, renderer
         self.events = events                      # () -> recent decision log events
         self.policy_bundle, self.data_bundle, self.opa = policy_bundle, data_bundle, opa
+        self.policy = policy
 
     def publish_once(self) -> str | None:
-        """Publishes every approved change waiting in the outbox. Returns the new
-        revision, or None when there was nothing to publish."""
+        """Publishes what is approved: a policy change first, else every approved data change
+        waiting in the outbox. Returns the new revision, or None when there was nothing."""
+        return self.publish_policy_once() or self.publish_data_once()
+
+    def _failed(self, ids: list[int], failure: Exception, bundle: str) -> None:
+        """The failed attempt changed nothing; record why, outside it."""
+        report = getattr(failure, "report", None)
+        with self.db.tx() as c:
+            c.execute("update outbox set published_at = now() where change_id = any(%s)", (ids,))
+            c.execute("update change_request set state = 'failed', error = %s, "
+                      "replay_report = coalesce(%s, replay_report), updated_at = now() where id = any(%s)",
+                      (str(failure), Jsonb(report) if report else None, ids))
+            dbm.audit(c, "publisher", "publish_failed", bundle, None, {"changes": ids, "error": str(failure)})
+        log.warning("publishing changes %s failed: %s", ids, failure)
+
+    def publish_policy_once(self) -> str | None:
+        """Publishes the approved policy change, if there is one: the records rendered at its
+        commit (when they differ from the active ones), then the policy."""
+        ids: list[int] = []
+        try:
+            with self.db.tx() as c:
+                ch = c.execute("""select cr.* from outbox o join change_request cr on cr.id = o.change_id
+                                  where o.published_at is null and cr.state = 'approved' and cr.kind = 'policy'
+                                  order by o.seq desc limit 1 for update of o skip locked""").fetchone()
+                if not ch:
+                    return None
+                if self.policy is None:
+                    raise RuntimeError("this publisher has no policy source")
+                ids = [ch["id"]]
+                sha = ch["object_id"]
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp = Path(tmp)
+                    self.policy.ensure_built(sha, tmp)
+                    data = self._render_at(c, sha, tmp)
+                    c.execute("update outbox set published_at = now() where change_id = %s", (ch["id"],))
+                    c.execute("update change_request set state = 'publishing', bundle_revision = %s, "
+                              "updated_at = now() where id = %s", (sha, ch["id"]))
+                    self.policy.record(c, sha, ch["id"])
+                    dbm.audit(c, "publisher", "publish", f"{self.policy_bundle}@{sha}", None,
+                              {"changes": ids, "records": data})
+                    # last, data first: once activated OPA may load them, so nothing may fail after
+                    if data:
+                        self.store.activate(self.data_bundle, data)
+                    self.store.activate(self.policy_bundle, sha)
+            log.info("published policy %s (change %s)%s", sha, ch["id"], f" with records {data}" if data else "")
+            return sha
+        except Exception as e:
+            if not ids:
+                raise
+            self._failed(ids, e, self.policy_bundle)
+            return None
+
+    def _render_at(self, c, sha: str, tmp: Path) -> str | None:
+        """The active records rendered at the policy commit, published as a new data revision
+        (not yet activated) if they differ from the active bundle; its revision, or None."""
+        records = dbm.resources(c)
+        data_dir = self.renderer.render(records, sha, tmp / "gateway-projects")
+        active = self.store.active(self.data_bundle)
+        if active and same_data(data_dir, self.store.fetch(self.data_bundle, active, tmp / "active.tar.gz")):
+            return None
+        seq = c.execute("select nextval('bundle_seq') as n").fetchone()["n"]
+        revision = f"projects-{seq:08d}"
+        build(data_dir, revision, self.signer, tmp / "bundle.tar.gz", opa=self.opa)
+        self.store.put_revision(self.data_bundle, revision, tmp / "bundle.tar.gz")
+        c.execute("update publication set state = 'superseded' where state = 'active'")
+        c.execute("""insert into publication (revision, seq, change_ids, state, policy_revision, records)
+                     values (%s, %s, '{}', 'active', %s, %s)""", (revision, seq, sha, Jsonb(records)))
+        return revision
+
+    def publish_data_once(self) -> str | None:
         ids: list[int] = []
         try:
             with self.db.tx() as c:
                 changes = c.execute("""select cr.* from outbox o join change_request cr on cr.id = o.change_id
-                                       where o.published_at is null and cr.state = 'approved'
+                                       where o.published_at is null and cr.state = 'approved' and cr.kind <> 'policy'
                                        order by o.seq for update of o skip locked""").fetchall()
                 if not changes:
                     return None
@@ -73,17 +148,8 @@ class Publisher:
         except Exception as e:
             if not ids:
                 raise
-            failure = e
-        # the failed attempt changed nothing; record why, outside it
-        report = getattr(failure, "report", None)
-        with self.db.tx() as c:
-            c.execute("update outbox set published_at = now() where change_id = any(%s)", (ids,))
-            c.execute("update change_request set state = 'failed', error = %s, replay_report = %s, updated_at = now() "
-                      "where id = any(%s)", (str(failure), Jsonb(report) if report else None, ids))
-            dbm.audit(c, "publisher", "publish_failed", self.data_bundle, None,
-                      {"changes": ids, "error": str(failure)})
-        log.warning("publishing changes %s failed: %s", ids, failure)
-        return None
+            self._failed(ids, e, self.data_bundle)
+            return None
 
     def resign_if_needed(self) -> str | None:
         """After a signing key rotation: publishes the active records again, signed with the
@@ -153,6 +219,7 @@ class Publisher:
 def main() -> None:
     import boto3
 
+    from .policy import from_env as policy_from_env
     from .vault import TransitSigner, Vault
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -166,19 +233,31 @@ def main() -> None:
     renderer = Renderer(env["DEPLOY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts")
     loki, ns = env["LOKI_URL"], env.get("DECISION_LOG_NAMESPACE", "mini-platform")
     since, limit = env.get("REPLAY_SINCE", "24h"), int(env.get("REPLAY_LIMIT", "2000"))
-    pub = Publisher(db, store, signer, renderer, lambda: fetch(loki, ns, since, limit))
-    interval = int(env.get("MIN_INTERVAL", "30"))
+    events = lambda: fetch(loki, ns, since, limit)                          # noqa: E731
+    watch = policy_from_env(db, store, signer, renderer, events)
+    pub = Publisher(db, store, signer, renderer, events, policy=watch)
+    interval, poll = int(env.get("MIN_INTERVAL", "30")), int(env.get("POLICY_POLL", "60"))
     while True:
         try:
+            watch.bootstrap()                       # a new cluster: the branch's head, unapproved
+            watch.resign_if_needed()
             pub.resign_if_needed()
             break
         except Exception:
-            log.exception("re-signing the active bundle")
+            log.exception("bootstrapping or re-signing the active bundles")
             time.sleep(10)
+    polled = 0.0
     while True:
+        if time.time() - polled >= poll:
+            polled = time.time()
+            try:
+                watch.propose()
+            except Exception:
+                log.exception("proposing the policy branch's head")
         try:
             with db.tx() as c:                      # OPA reports only on changes: check here too
-                activation.activate_due(c, pub.data_bundle, activation.ready_opa_pods())
+                activation.activate_due(c, pub.data_bundle, activation.ready_opa_pods(),
+                                        policy_bundle=pub.policy_bundle)
         except Exception:
             log.exception("activation check")
         try:
