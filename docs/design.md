@@ -33,9 +33,11 @@ step, for 1,000 projects or more on several sites, edited through a portal.
   what OPA loads. OPA Control Plane is retired (see
   [Why OCP goes](#why-ocp-goes)).
 
-**Out of scope:** the Rego policy, the model catalog (`catalog/models.yaml`)
-and the project schema stay in Git, reviewed by the platform team in pull
-requests. The registry decides only when a merged commit reaches OPA.
+**Out of scope:** the Rego policy, the record schemas and the gateway-models
+chart stay in Git ([nolimitkun/gateway-policy](https://github.com/nolimitkun/gateway-policy)),
+reviewed by the platform team in pull requests; the registry decides only when a
+merged commit reaches OPA. The model and tool catalog was in Git too, and is now
+records here like a project's (see [Where the records are](#where-the-records-are-and-their-copies)).
 
 ## Architecture
 
@@ -47,10 +49,14 @@ flowchart LR
   api -->|diff| opap[OPA: required approvals]
   api --> kc
   pg -->|outbox| pub[Publisher<br/>check, replay,<br/>build and sign]
-  git[Git main: Rego, catalog, schema<br/>reviewed in pull requests] -->|new commit:<br/>a policy change| pub
+  git[Git main: Rego, schemas,<br/>gateway-models chart<br/>reviewed in pull requests] -->|new commit:<br/>a policy change| pub
   pub -->|policy changes| pg
   vt[Vault Transit<br/>signing key] -.-> pub
   pub -->|gateway-policy,<br/>gateway-projects| s3[(Object store<br/>versioned bundles,<br/>copied to each site)]
+  pub -->|gateway-models chart| helm[(Helm repo in<br/>the object store)]
+  helm -->|Argo CD| gw
+  pub -->|key maps| kv[Vault KV<br/>gateway API keys]
+  kv -->|VSO| gw
   s3 --> opa[OPA, N per site<br/>verifies signatures]
   opa -->|status: bundle revisions| api
   gw[agentgateway] -->|ext_authz| opa
@@ -98,8 +104,8 @@ header would also have to be stripped before the upstream call.
 
 | Bundle | Roots | Built by | When |
 |--------|-------|----------|------|
-| `gateway-policy` | `gateway`, `catalog`, `system`, `portal` | the publisher, from a commit on `main` | when that commit's policy change is approved (a few times a week) |
-| `gateway-projects` | `projects`, `exceptions`, `agents` | the publisher | on every approved change |
+| `gateway-policy` | `gateway`, `system`, `portal` | the publisher, from a commit on `main` | when that commit's policy change is approved (a few times a week) |
+| `gateway-projects` | `projects`, `exceptions`, `agents`, `registry` (the catalog) | the publisher | on every approved change |
 
 - **Signing:** the publisher signs both. The key lives in Vault Transit and
   is never exported, and the publisher's Vault role can only sign with it.
@@ -369,9 +375,11 @@ change `platform-admin` proposes is approved by an owner who isn't its author;
 
 ### Where the records are, and their copies
 
-The projects, agents and exceptions live only in the registry's database. This
-repo has their format and the renderer, not a copy: no `projects/*.yaml`, no
-generated `policies/gateway-projects/` data, no export pull requests.
+The projects, agents and exceptions, and the catalog (models, Google APIs, MCP
+tools and the catalog's settings), live only in the registry's database. The
+policy repo has their format and the renderers, not a copy: no `projects/*.yaml`,
+no `catalog/*.yaml`, no generated `policies/gateway-projects/` data, no export
+pull requests.
 
 - **Copies:** the CronJob `project-registry-snapshot` (03:00 UTC) writes every
   record to `registry-snapshots/<time>.json` and `latest.json` in the bundle
@@ -631,8 +639,7 @@ on the cluster, every publish so far changed nothing for other projects.
   with JWTs");
 - a portal page richer than the PoC's (one page: lists, a JSON merge patch
   editor, approvals; a Backstage plugin later);
-- API keys in Vault are still created by the bootstrap, run by a person after a
-  new key id (it reads the ids from the registry);
+- rotating a key in place (today: a second key id, then the old one removed);
 - copies of the bundles to other sites;
 - the model choices as the intersection of the catalog and the model
   registry's `prod` versions.

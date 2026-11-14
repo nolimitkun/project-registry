@@ -165,7 +165,7 @@ class Renderer:
     @staticmethod
     def _gen(work: Path, *args: str, env: dict[str, str] | None = None) -> str:
         env = {**os.environ, **(env or {})}
-        # The catalog first (validated, rendered to data.catalog and the gateway's values),
+        # The catalog first (validated, rendered to data.registry.catalog and the gateway's values),
         # then the projects, which are checked against it.
         if (work / "scripts" / "gen-catalog.py").exists():
             cat = subprocess.run([sys.executable, "scripts/gen-catalog.py"], cwd=work,
@@ -197,6 +197,6 @@ class Renderer:
         return out
 
     def lines(self, records: dict[str, dict[str, dict]], revision: str, flag: str) -> str:
-        """gen-projects.py --keys or --mirrors over the records."""
+        """gen-projects.py with a flag (--keys) over the records."""
         with self.prepared(records, revision) as work:
             return self._gen(work, flag)
