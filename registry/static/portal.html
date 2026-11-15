@@ -34,7 +34,9 @@
   textarea { width: 100%; min-height: 160px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
   input[type=text] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
   button.action { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; margin-right: 6px; }
+  a { color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
   button.danger { color: var(--bad); }
   .muted { color: var(--muted); } .error { color: var(--bad); white-space: pre-wrap; } .success { color: var(--ok); }
   pre.diff span.add { color: var(--ok); } pre.diff span.del { color: var(--bad); } pre.diff span.hunk { color: var(--muted); }
@@ -42,6 +44,7 @@
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
   .login { text-align: center; padding: 60px 16px; }
+  [hidden] { display: none !important; }
   .badge { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--warn); color: var(--panel); font-size: 11px; font-weight: 600; text-align: center; }
   .form { display: grid; grid-template-columns: 200px 1fr; gap: 10px 14px; align-items: start; }
   .form label { color: var(--muted); padding-top: 6px; } .form .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
@@ -80,6 +83,8 @@
 "use strict";
 // --- helpers: every value from the API goes in as text, never as HTML ---
 const $main = document.getElementById("main");
+// Fills the page. Skips null and undefined: replaceChildren would print them as text.
+const show = (...nodes) => $main.replaceChildren(...nodes.flat().filter((x) => x != null));
 function el(tag, attrs, ...children) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -208,10 +213,10 @@ function route() {
   const [view, id] = path.split("/").map(decodeURIComponent);
   const name = views[view] ? view : "inbox";
   show_nav(name);
-  $main.replaceChildren(el("p", { class: "muted" }, "Loading…"));
+  show(el("p", { class: "muted" }, "Loading…"));
   const params = Object.fromEntries(new URLSearchParams(query || ""));
   const page = name === "projects" && id ? viewProject(id) : name === "changes" && id ? viewChange(Number(id)) : views[name](params);
-  page.catch((e) => $main.replaceChildren(el("p", { class: "error" }, e.message)));
+  page.catch((e) => show(el("p", { class: "error" }, e.message)));
   refreshBadge();
 }
 async function refreshBadge() {
@@ -223,7 +228,7 @@ async function refreshBadge() {
 
 async function viewInbox() {
   const changes = await api("GET", "/changes?awaiting=me");
-  $main.replaceChildren(el("section", { class: "panel" }, el("h2", {}, "Waiting for me"),
+  show(el("section", { class: "panel" }, el("h2", {}, "Waiting for me"),
     el("p", { class: "muted" }, "Changes with an open approval you may give: not your own, not yet decided by you."),
     changes.length ? changesTable(changes, true) : el("p", {}, "Nothing waits for you.")));
 }
@@ -278,15 +283,17 @@ async function viewProjects() {
     el("td", {}, el("strong", {}, id)), el("td", {}, p.data_class), el("td", {}, (p.placement || []).map((x) => el("span", { class: "chip" }, x))),
     el("td", {}, p.limits && p.limits.requests_per_minute ? `${p.limits.requests_per_minute}/min` : "—"),
     el("td", {}, p.budget ? `$${p.budget.usd_per_30_days}` : "—"), el("td", { class: "muted" }, p.description || "")));
-  $main.replaceChildren(
+  show(
     el("section", { class: "panel" }, el("h2", {}, "Projects"),
       el("table", {}, el("thead", {}, el("tr", {}, ["Project", "Data class", "Placement", "Requests", "Budget / 30 days", "Description"].map((h) => el("th", {}, h)))), el("tbody", {}, rows))),
     newProjectPanel());
 }
 
 async function viewProject(id) {
-  const [record, changes, settings, models] = await Promise.all([api("GET", `/projects/${encodeURIComponent(id)}`),
-    api("GET", `/changes?object_id=${encodeURIComponent(id)}&limit=20`), api("GET", "/settings"), api("GET", "/models")]);
+  const [record, changes, settings, models, agents] = await Promise.all([api("GET", `/projects/${encodeURIComponent(id)}`),
+    api("GET", `/changes?object_id=${encodeURIComponent(id)}&limit=20`), api("GET", "/settings"), api("GET", "/models"), api("GET", "/agents")]);
+  // An agent's keys are on its own record, so a project whose callers are all agents has no keys of its own.
+  const agentKeys = Object.entries(agents).filter(([, a]) => a.project === id).flatMap(([aid, a]) => (a.keys || []).map((k) => `${k} (agent ${aid})`));
   const p = record.spec;
   const classes = settings.data_classes || {};
   const fmt = (v) => v === undefined || v === null || (Array.isArray(v) && !v.length) ? el("span", { class: "muted" }, "—") : Array.isArray(v) ? v.map((x) => el("span", { class: "chip" }, x)) : String(v);
@@ -294,10 +301,10 @@ async function viewProject(id) {
     ["Owner", p.owner], ["Data class", p.data_class], ["Placement", p.placement || (classes[p.data_class] ? [...classes[p.data_class], "(all its class allows)"] : null)],
     ["Models", (p.models || {}).allow || ["*"]], ["Model for auto", p.routing || "cheapest"], ["MCP tools", p.mcp_tools],
     ["Requests per minute", (p.limits || {}).requests_per_minute ?? "no limit"], ["Tokens per minute", (p.limits || {}).tokens_per_minute ?? "no limit"],
-    ["Budget per 30 days", p.budget ? `$${p.budget.usd_per_30_days}` : "no cap"], ["Keys", p.keys], ["Calls deployments directly", p.deployments ? "yes" : "no"],
+    ["Budget per 30 days", p.budget ? `$${p.budget.usd_per_30_days}` : "no cap"], ["Keys", p.keys], ["Agents' keys", agentKeys], ["Calls deployments directly", p.deployments ? "yes" : "no"],
   ].flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, fmt(v))]));
   const open = changes.find((c) => ["pending_approval", "approved", "publishing"].includes(c.state));
-  $main.replaceChildren(
+  show(
     el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, `Project ${id}`), el("span", { class: "spacer" }),
       el("a", { href: `#/usage?project=${encodeURIComponent(id)}` }, "Usage")),
       el("p", { class: "muted" }, p.description || "", ` Record revision ${record.revision}.`), facts),
@@ -381,7 +388,7 @@ const SETTINGS = {
 async function viewSettings() {
   const settings = await api("GET", "/settings");
   const canPropose = me.groups.includes("platform-admins");
-  $main.replaceChildren(...Object.keys(SETTINGS).map((id) => settingPanel(id, settings[id], canPropose)));
+  show(...Object.keys(SETTINGS).map((id) => settingPanel(id, settings[id], canPropose)));
 }
 
 function settingPanel(id, spec, canPropose) {
@@ -423,7 +430,7 @@ async function viewChanges() {
   const filter = el("select", { onchange: () => load() }, el("option", { value: "open" }, "Open"), el("option", { value: "" }, "All"));
   const holder = el("div");
   const load = async () => holder.replaceChildren(changesTable(await api("GET", `/changes?limit=100${filter.value ? "&state=" + filter.value : ""}`)));
-  $main.replaceChildren(el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Changes"), el("span", { class: "spacer" }), filter), holder));
+  show(el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Changes"), el("span", { class: "spacer" }), filter), holder));
   await load();
 }
 
@@ -441,7 +448,7 @@ async function viewChange(cid) {
   const pending = ["pending_approval", "approved"].includes(c.state);
   const yours = c.yours || [];
   const mayWithdraw = c.created_by === me.name || me.groups.includes("platform-admins");
-  $main.replaceChildren(
+  show(
     el("section", { class: "panel" }, el("h2", {}, c.kind === "policy" ? `Change ${c.id}: policy at ${c.object_id.slice(0, 12)}` : `Change ${c.id}: ${c.op} ${c.kind} ${c.object_id}`),
       el("p", {}, "State: ", el("strong", { class: `state-${c.state}` }, c.state), c.bundle_revision ? ` · bundle ${c.bundle_revision}` : "",
         ` · by ${c.created_by} · ${when(c.created_at)}`),
@@ -506,7 +513,7 @@ async function viewPublications() {
     try { await api("POST", `/rollback/${encodeURIComponent(rev)}`); route(); }
     catch (e) { msg.className = "error"; msg.textContent = e.message; }
   };
-  $main.replaceChildren(el("section", { class: "panel" }, el("h2", {}, "Published bundles"),
+  show(el("section", { class: "panel" }, el("h2", {}, "Published bundles"),
     el("table", {}, el("thead", {}, el("tr", {}, ["Bundle", "Revision", "State", "Changes", "Policy commit", "Published", "Active everywhere", ""].map((h) => el("th", {}, h)))),
       el("tbody", {}, pubs.map((p) => el("tr", {}, el("td", { class: "muted" }, p.bundle), el("td", {}, p.bundle === "gateway-policy" ? p.revision.slice(0, 12) : p.revision), el("td", { class: `state-${p.state}` }, p.state),
         el("td", {}, p.change_ids.length ? p.change_ids.join(", ") : el("span", { class: "muted" }, p.bundle === "gateway-policy" ? "first policy" : "import / re-sign / with a policy")),
@@ -571,10 +578,10 @@ async function viewUsage(params) {
       numTd(count(p.requests)), numTd(count(p.tokens)), numTd(count(p.denied)), numTd(count(p.limited)),
       el("td", {}, p.project ? el("button", { class: "action", onclick: (ev) => { ev.stopPropagation(); go(`projects/${encodeURIComponent(p.project)}`); } }, "Limits and budget…") : null)))));
   const models = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Model"), el("th", {}, "Placement"), numTh("Calls"), numTh("Of them via auto"), numTh("Input tokens"), numTh("Output tokens"), numTh("Spend"))),
-    el("tbody", {}, r.by_model.map((m) => el("tr", {}, el("td", {}, m.model || ""), el("td", {}, m.placement ? el("span", { class: "chip" }, m.placement) : ""),
+    el("tbody", {}, r.by_model.map((m) => el("tr", {}, el("td", {}, m.model || el("span", { class: "muted" }, "none named")), el("td", {}, m.placement ? el("span", { class: "chip" }, m.placement) : el("span", { class: "muted" }, "not in the catalog")),
       numTd(count(m.requests)), numTd(count(m.via_auto)), numTd(count(m.input_tokens)), numTd(count(m.output_tokens)), numTd(usd(m.cost_usd))))));
   const agents = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Project"), el("th", {}, "Agent or key"), numTh("Calls"), numTh("Tokens"), numTh("Spend"))),
-    el("tbody", {}, r.by_agent.map((a) => el("tr", {}, el("td", {}, a.project || ""), el("td", {}, a.agent ? [el("strong", {}, a.agent), " (agent)"] : (a.key_id || "")),
+    el("tbody", {}, r.by_agent.map((a) => el("tr", {}, el("td", {}, a.project || el("span", { class: "muted" }, "no project (before the log had one)")), el("td", {}, a.agent ? [el("strong", {}, a.agent), " (agent)"] : (a.key_id || el("span", { class: "muted" }, "no key"))),
       numTd(count(a.requests)), numTd(count(a.tokens)), numTd(usd(a.cost_usd))))));
   const o = r.onprem;
   const onprem = el("p", {}, `On-prem models answered ${count(o.input_tokens)} input and ${count(o.output_tokens)} output tokens, at no per-token charge`,
@@ -590,7 +597,7 @@ async function viewUsage(params) {
     el("section", { class: "panel" }, el("h2", {}, "Agents and keys"), r.by_agent.length ? agents : el("p", { class: "muted" }, "None.")),
   ];
   if (opts.project) panels.push(requestsPanel(opts.project, r.end));
-  $main.replaceChildren(...panels);
+  show(...panels);
 }
 
 function requestsPanel(project, day) {
@@ -620,7 +627,7 @@ function show_nav(view) { for (const b of document.querySelectorAll("nav button"
     config = await (await fetch("/portal/config.json")).json();
     await finishLogin();
     if (!tokens()) {
-      $main.replaceChildren(el("div", { class: "login" }, el("p", {}, "Projects, agents and exceptions of the AI gateway, changed by request and approval."),
+      show(el("div", { class: "login" }, el("p", {}, "Projects, agents and exceptions of the AI gateway, changed by request and approval."),
         el("button", { class: "action primary", onclick: () => login().catch((e) => alert("Login failed: " + e.message)) }, "Log in with Keycloak")));
       return;
     }
@@ -631,7 +638,7 @@ function show_nav(view) { for (const b of document.querySelectorAll("nav button"
     for (const b of document.querySelectorAll("nav button")) b.onclick = () => go(b.dataset.view);
     window.addEventListener("hashchange", route);
     route();
-  } catch (e) { $main.replaceChildren(el("p", { class: "error" }, e.message)); }
+  } catch (e) { show(el("p", { class: "error" }, e.message)); }
 })();
 </script>
 </body>
