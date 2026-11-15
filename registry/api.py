@@ -399,10 +399,12 @@ def create_app(reg: Registry) -> FastAPI:
     @app.get("/metrics", response_class=PlainTextResponse, dependencies=[Depends(internal_only)])
     def metrics():
         """Prometheus: each project's budget (USD per 30 days), for one alert rule over all
-        projects, and how each publisher output is doing (health.py); cluster-internal, no
-        user token."""
+        projects; each model's catalog price, for the alert that the gateway's own price
+        table (what budgets are charged at) still agrees; and how each publisher output is
+        doing (health.py). Cluster-internal, no user token."""
         with reg.db.tx() as c:
             rows = c.execute("select id, spec from resource where kind = 'project' order by id").fetchall()
+            models = c.execute("select id, spec from resource where kind = 'model' order by id").fetchall()
             outputs = health.metrics(c)
         lines = ["# HELP project_budget_usd A project's spend cap in USD per 30-day window.",
                  "# TYPE project_budget_usd gauge"]
@@ -410,6 +412,17 @@ def create_app(reg: Registry) -> FastAPI:
             usd = (r["spec"].get("budget") or {}).get("usd_per_30_days")
             if usd is not None:
                 lines.append(f'project_budget_usd{{project="{r["id"]}"}} {float(usd)}')
+        # Labelled like the gateway's token and cost metrics: the model name the provider
+        # got (a KServe model's servedModel: its route replaces the catalog name), and the
+        # token type.
+        lines += ["# HELP model_price_usd_per_million_tokens A model's catalog price.",
+                  "# TYPE model_price_usd_per_million_tokens gauge"]
+        for r in models:
+            price, label = r["spec"].get("price") or {}, r["spec"].get("servedModel") or r["id"]
+            for kind in ("input", "output"):
+                if kind in price:
+                    lines.append(f'model_price_usd_per_million_tokens{{model="{r["id"]}",'
+                                 f'gen_ai_request_model="{label}",gen_ai_token_type="{kind}"}} {float(price[kind])}')
         return "\n".join(lines + outputs) + "\n"
 
     @app.get("/publications")
