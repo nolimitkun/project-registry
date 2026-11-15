@@ -59,17 +59,19 @@ None of these is a backup of the database (approvals, audit log).
 - `/internal/bundles/<bundle>`: the active bundle, for `scripts/policy-replay.py`.
 - agentregistry's catalog of registered agents: the publisher applies it after each publish and every hour (`AGENTREGISTRY_URL`).
 - the gateway's model routes: once a policy commit is active, the publisher packages its `charts/gateway-models` with the catalog as values and publishes it to a Helm repository in MinIO (`GATEWAY_MODELS_BUCKET`, `registry/gatewaychart.py`), which Argo CD installs; after a new version the publisher asks Argo CD to refresh that one Application (`GATEWAY_MODELS_ARGO_APP`, `registry/argo.py`) rather than wait for its poll.
-- `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule; `model_price_usd_per_million_tokens{model, gen_ai_request_model, gen_ai_token_type}`, each catalog price labelled like the gateway's token metrics (a KServe model under its served name), for the price drift alert (budgets charge agentgateway's own price table); and `registry_output_last_success_timestamp_seconds{output}` / `..._last_failure_...` for each of the publisher's outputs (`data`, `policy`, `chart`, `keys`, `activation`, `agentregistry`; `registry/health.py`), so one that keeps failing alerts rather than only logging.
+- `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule; `model_price_usd_per_million_tokens{model, gen_ai_request_model, gen_ai_token_type}`, each catalog price labelled like the gateway's token metrics (a KServe model under its served name), for the price drift alert (budgets charge agentgateway's own price table); and `registry_output_last_success_timestamp_seconds{output}` / `..._last_failure_...` for each of the publisher's outputs (`data`, `policy`, `chart`, `keys`, `activation`, `agentregistry`) and the hourly usage job (`usage`; `registry/health.py`), so one that keeps failing alerts rather than only logging.
 
 `/export` returns every record (a signed-in user).
 
 **Spend and usage.** An hourly job (`python -m registry.usage`, `registry/usage.py`) reads the gateway's access log from Loki: one line per request, with the project and key the gateway adds, the model, tokens, the cost the gateway charged (what budgets count), status and duration. It writes Parquet to its own bucket (`USAGE_BUCKET`) and shapes it with DuckDB:
 
-- `raw/date=D/hour=HH.parquet`: one file per hour, rewritten whole; each run takes the last `USAGE_LOOKBACK_HOURS` (3) again, for lines that came late, and any hour of the last `USAGE_BACKFILL_HOURS` (168, about what Loki keeps) that has no file yet;
-- `dims/date=D/`: that day's projects (owner group, budget, limits), keys with the agent each belongs to, and models (placement, price), so a day's spend is read against that day's budget;
+- `raw/date=D/hour=HH.parquet`: one file per hour, rewritten whole; each run takes the current hour and the `USAGE_LOOKBACK_HOURS` (3) before it again, for lines that came late, and any hour of the last `USAGE_BACKFILL_HOURS` (168, about what Loki keeps) that has no file yet;
+- `dims/date=D/`: that day's projects (owner group, budget, limits), keys with the agent each belongs to, and models (placement, price, served name), so a request is joined with the agent and placement of its day. The Usage page compares spend with each project's current budget, the one the rate limit enforces;
 - `fact/date=D/part.parquet`, one row per request, deduplicated on (trace id, span id), with the model as the catalog names it (a KServe model's served name and `auto`'s virtual model mapped back) and its outcome: `ok`, `denied` (OPA's 403), `limited` (the rate limit's 429), `error` (including a provider's 429), `unauthenticated`;
 - `daily/date=D/part.parquet`: per project, agent, key, kind of request (`model`, `list` for `/v1/models`, `mcp`, `other`), model and outcome;
-- `state.json`: up to when it is complete.
+- `state.json`: up to when it is complete (the time of the last run).
+
+An MCP tool is named as the catalog and the policy do: the gateway logs `tools/call` with the tool's name and its target apart (`gen_ai.tool.name=list_datasources`, `mcp.target=grafana`), joined as `grafana_list_datasources`.
 
 Its runs record health as the output `usage`. `GET /usage` reports a date range from the daily files and `GET /usage/requests` a project's requests of one day from the facts, both for the projects the caller may see: every one for the platform team and the cost owners, otherwise those of the caller's owner groups. The API caches the files locally and queries them in process with DuckDB. Parquet travels through boto3, not DuckDB's S3 extension, which it would download at run time.
 
