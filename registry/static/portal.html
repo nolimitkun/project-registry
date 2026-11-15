@@ -97,7 +97,7 @@ function el(tag, attrs, ...children) {
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
     else e.setAttribute(k, v);
   }
-  for (const c of children.flat()) if (c !== null && c !== undefined) e.append(c instanceof Node ? c : String(c));
+  for (const c of children.flat(Infinity)) if (c !== null && c !== undefined) e.append(c instanceof Node ? c : String(c));
   return e;
 }
 const json = (v) => JSON.stringify(v, null, 2);
@@ -730,7 +730,9 @@ async function viewStatus() {
     el("section", { class: "panel" }, el("h2", {}, "The registry's outputs"),
       el("p", { class: "muted" }, "Each round of the publisher's loop, and the hourly usage job."),
       table(["Output", "Last success", "Last failure", ""], s.outputs.map((o) => el("tr", {}, el("td", {}, el("strong", {}, o.output)), el("td", {}, ago(o.last_success)),
-        el("td", {}, o.last_failure ? [ago(o.last_failure), o.last_error ? el("div", { class: "muted" }, o.last_error) : null] : muted("never")),
+        el("td", {}, !o.last_failure ? muted("never") : !o.last_error ? ago(o.last_failure)
+          : o.failing ? [ago(o.last_failure), el("div", { class: "error" }, o.last_error)]
+          : el("details", {}, el("summary", { class: "muted" }, ago(o.last_failure), ", since recovered"), el("div", { class: "muted" }, o.last_error))),
         el("td", { class: o.failing ? "error" : "state-active" }, o.failing ? "failing" : "ok"))))),
     el("section", { class: "panel" }, el("h2", {}, "Usage ledger"),
       !s.usage ? el("p", { class: "muted" }, "Not configured.") : s.usage.error ? el("p", { class: "error" }, s.usage.error)
