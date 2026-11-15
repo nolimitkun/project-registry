@@ -396,7 +396,8 @@ def test_a_proposed_kagent_agent_is_checked_against_the_deployment_repos_wiring(
     db, reg = world["db"], world["reg"]
     importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     world["roles"]["value"] = ["project_owner"]
-    unwired = api.ChangeIn(spec={"secret": {"name": "not-in-kagent-resources", "field": "OPENAI_API_KEY"}})
+    # a key its ModelConfig doesn't read (the deployment copies kagent-k8s-agent's key for it)
+    unwired = api.ChangeIn(spec={"keys": ["kagent-k8s-agent-2"]})
     assert reg.submit(ALICE, "agent", "kagent-k8s-agent", "update", unwired)["state"] == "pending_approval"
     with db.tx() as c:                                    # no wiring check configured: accepted
         c.execute("update change_request set state = 'withdrawn'")
