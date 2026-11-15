@@ -42,27 +42,31 @@ records here like a project's (see [Where the records are](#where-the-records-ar
 
 ## Architecture
 
+As built (the design's parts not built yet are under [Not built yet](#not-built-yet): OAuth
+clients for callers, copies of the bundles to other sites):
+
 ```mermaid
 flowchart LR
-  kc[Keycloak<br/>people, one OAuth client per project]
-  ui[Portal UI] --> api[Registry API]
-  api --> pg[(Postgres<br/>projects, changes,<br/>approvals, audit log)]
+  people[People in the portal<br/>Keycloak login] --> api[Registry API]
+  api --> pg[(Postgres<br/>records, settings, changes,<br/>approvals, audit, health)]
   api -->|diff| opap[OPA: required approvals]
-  api --> kc
-  pg -->|outbox| pub[Publisher<br/>check, replay,<br/>build and sign]
-  git[Git main: Rego, schemas,<br/>gateway-models chart<br/>reviewed in pull requests] -->|new commit:<br/>a policy change| pub
-  pub -->|policy changes| pg
+  git[This repository's policy/<br/>Rego, schemas, renderers, chart] -->|new commit| pub
+  pg -->|outbox + NOTIFY| pub[Publisher<br/>check, replay,<br/>build and sign]
+  pub -->|policy changes, health| pg
   vt[Vault Transit<br/>signing key] -.-> pub
-  pub -->|gateway-policy,<br/>gateway-projects| s3[(Object store<br/>versioned bundles,<br/>copied to each site)]
-  pub -->|gateway-models chart| helm[(Helm repo in<br/>the object store)]
-  helm -->|Argo CD| gw
+  pub -->|gateway-policy,<br/>gateway-projects| s3[(MinIO<br/>versioned bundles)]
+  pub -->|gateway-models chart| helm[(Helm repo<br/>in MinIO)]
+  pub -.->|refresh| argo[Argo CD]
+  helm --> argo -->|model routes| gw
   pub -->|key maps| kv[Vault KV<br/>gateway API keys]
   kv -->|VSO| gw
-  s3 --> opa[OPA, N per site<br/>verifies signatures]
+  pub -->|agents| ar[agentregistry]
+  s3 --> opa[OPA<br/>verifies signatures]
   opa -->|status: bundle revisions| api
   gw[agentgateway] -->|ext_authz| opa
   opa -->|allow + limits in<br/>dynamic metadata| gw
   gw -->|descriptors with<br/>limitOverride| rl[rate-limit service]
+  api -->|/metrics: budgets,<br/>output health| prom[(Prometheus)]
 ```
 
 ## Decisions
@@ -387,7 +391,8 @@ curl -s -X POST -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: applic
 curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/changes/<id>
 ```
 
-The change is `active` within about a minute of its last approval. Every
+The change is `active` within seconds of its last approval (about 6 s measured: the
+approval wakes the publisher, and OPA checks for a new bundle every 2–5 s). Every
 imported project's owner group is `project-owners` (`platform-user`), so a
 change `platform-admin` proposes is approved by an owner who isn't its author;
 `cost-owner` and `security-reviewer` hold the other two roles.
@@ -554,8 +559,8 @@ week of shadow running:
   marks the changes `failed` with the reason. A change is `active` once every
   ready OPA pod has reported its revision (`registry/activation.py`, checked on
   every report and every round of the publisher).
-- **Policy changes** (`registry/policy.py`, in the publisher): every minute it
-  checks `main` (`policy.ref`). For a new commit it:
+- **Policy changes** (`registry/policy.py`, in the publisher): every 15 s
+  (`POLICY_POLL`) it checks `main` (`policy.ref`). For a new commit it:
   1. runs `opa test`;
   2. builds and signs `gateway-policy`, but doesn't activate it;
   3. renders the records with that commit's `gen-projects.py`;
