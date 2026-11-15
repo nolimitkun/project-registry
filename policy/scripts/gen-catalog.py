@@ -191,7 +191,10 @@ def render(catalog, tool_risks):
     }
     policy = {
         "models": {
-            name: {"placement": m["placement"], "provider": m["provider"], "price": m["price"]}
+            # served_model: the name the gateway's metrics carry for a KServe model (its
+            # route replaces the catalog name), which rankings.rego maps back
+            name: {"placement": m["placement"], "provider": m["provider"], "price": m["price"],
+                   **({"served_model": m["servedModel"]} if "servedModel" in m else {})}
             for name, m in models.items()
         },
         "google_apis": {name: {"placement": a["placement"]} for name, a in apis.items()},

@@ -198,6 +198,9 @@ only:
 - a 2-minute inter-query cache
 - the signal is median request duration over 6 hours, at least 3 requests,
   scoped to the production gateway
+- the metrics name a KServe model by what vLLM serves (its route replaces the
+  catalog name), so `rankings.rego` maps that name back through the catalog's
+  `served_model`
 
 There is no time-to-first-token metric without streaming traffic. Failed calls
 count too, so a throttled model ranks as slow. If Prometheus is down, `fastest`
