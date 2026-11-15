@@ -435,7 +435,7 @@ function requestsPanel(project, day) {
       const rows = await api("GET", `/usage/requests?${new URLSearchParams({ project, date: date.value, limit: 50 })}`);
       holder.replaceChildren(rows.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Time (UTC)"), el("th", {}, "Agent or key"), el("th", {}, "What"), el("th", {}, "Outcome"), numTh("Tokens in / out"), numTh("Spend"), numTh("Duration"), el("th", {}, "Trace id"))),
         el("tbody", {}, rows.map((q) => el("tr", {}, el("td", { class: "muted" }, String(q.ts).slice(11, 19)), el("td", {}, q.agent || q.key_id || ""),
-          el("td", {}, q.kind === "model" ? [q.model || "", q.virtual_model ? el("span", { class: "chip" }, q.virtual_model) : null] : q.kind === "mcp" ? `MCP ${q.mcp_method || ""}` : q.kind),
+          el("td", {}, q.kind === "model" ? [q.model || "", q.virtual_model ? el("span", { class: "chip" }, q.virtual_model) : null] : q.kind === "mcp" ? `MCP ${q.mcp_method || ""}${q.mcp_tool ? " " + q.mcp_tool : ""}` : q.kind),
           el("td", { class: q.outcome === "ok" ? "" : "error" }, `${q.outcome} ${q.status ?? ""}`), numTd(`${count(q.input_tokens)} / ${count(q.output_tokens)}`), numTd(usd(q.cost_usd)),
           numTd(q.duration_ms == null ? "" : `${Math.round(q.duration_ms)} ms`), el("td", { class: "muted" }, el("code", {}, q.trace_id || "")))))) : el("p", { class: "muted" }, "No requests that day."));
     } catch (e) { holder.replaceChildren(el("p", { class: "error" }, e.message)); }

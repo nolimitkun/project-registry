@@ -101,7 +101,7 @@ def test_parse_reads_the_access_log():
 
 def test_a_run_names_models_as_the_catalog_and_joins_agents_and_budgets(bucket):
     state = usage.run(bucket, loki([CLOUD, KSERVE, AUTO, DENIED, OTHER]), RECORDS, OWNERS, now=NOW, backfill=3)
-    assert state["days"] == {"2026-11-15": 4} and state["through"] == "2026-11-15T12:00:00+00:00"
+    assert state["days"] == {"2026-11-15": 4} and state["through"] == "2026-11-15T11:30:00+00:00"   # the run's time
     rows = {(r["project"], r["model"], r["outcome"]): r for r in daily(bucket)}
     assert set(rows) == {("admin", "gemini-3.8-flash", "ok"), ("admin", "gemini-3.5-flash-lite", "ok"),
                          ("kagent", "qwen3.6-27b", "ok"), ("open-webui", None, "denied")}
@@ -117,6 +117,28 @@ def test_a_run_names_models_as_the_catalog_and_joins_agents_and_budgets(bucket):
     assert {(r["kind"], r["requests"]) for r in daily(bucket)} == {("model", 1), ("list", 1)}
     dims = usage.Reader(bucket).bucket.get("dims/date=2026-11-15/projects.parquet")
     assert dims                                                     # the day's budgets, for the day's spend
+
+
+def test_an_mcp_tool_is_named_as_the_catalog_does(bucket):
+    # what the gateway logs for tools/call: the tool without its target's prefix
+    call = line("2026-11-15T10:13:00Z", **{"trace.id": "m", "span.id": "m", "project": "admin", "key_id": "admin",
+                                           "protocol": "mcp", "route": "mini-platform/platform-mcp", "http.path": "/mcp",
+                                           "mcp.method.name": "tools/call", "mcp.target": "grafana",
+                                           "mcp.resource.type": "tool", "gen_ai.tool.name": "list_datasources"})
+    usage.run(bucket, loki([call]), RECORDS, OWNERS, now=NOW, backfill=3)
+    [req] = usage.requests_of(usage.Reader(bucket), "admin", dt.date(2026, 11, 15))
+    assert (req["kind"], req["mcp_method"], req["mcp_tool"]) == ("mcp", "tools/call", "grafana_list_datasources")
+
+
+def test_raw_files_from_before_a_column_existed_still_read(bucket, tmp_path):
+    usage.run(bucket, loki([CLOUD]), RECORDS, OWNERS, now=NOW, backfill=3)
+    # rewrite 10:00's raw file without mcp_target, as an older job wrote it
+    con = usage._duck()
+    old = tmp_path / "old.parquet"
+    (tmp_path / "cur.parquet").write_bytes(bucket.get("raw/date=2026-11-15/hour=10.parquet"))
+    con.execute(f"COPY (SELECT * EXCLUDE (mcp_target) FROM read_parquet('{tmp_path / 'cur.parquet'}')) TO '{old}' (FORMAT parquet)")
+    bucket.put("raw/date=2026-11-15/hour=10.parquet", old.read_bytes())
+    assert usage.transform(bucket, dt.date(2026, 11, 15), tmp_path) == 1
 
 
 def test_a_providers_429_is_an_error_not_a_limit(bucket):

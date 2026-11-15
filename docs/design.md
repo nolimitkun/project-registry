@@ -67,6 +67,10 @@ flowchart LR
   opa -->|allow + limits in<br/>dynamic metadata| gw
   gw -->|descriptors with<br/>limitOverride| rl[rate-limit service]
   api -->|/metrics: budgets, prices,<br/>output health| prom[(Prometheus)]
+  gw -->|access log, with project and key| loki[(Loki)]
+  loki -->|hourly| usage[Usage job<br/>Parquet, DuckDB]
+  usage -->|raw, fact, daily, dims| ub[(MinIO<br/>registry-usage)]
+  ub -->|Usage page| api
 ```
 
 ## Decisions

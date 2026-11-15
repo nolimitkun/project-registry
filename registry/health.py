@@ -1,14 +1,16 @@
 """How each of the publisher's outputs is doing, for /metrics and an alert.
 
 The publisher's loop keeps several things current: the data bundle, policy commits, the
-gateway-models chart, the gateway's key maps, OPA activation, agentregistry. Each round
+gateway-models chart, the gateway's key maps, OPA activation, agentregistry. The hourly
+usage job (usage.py) records itself the same way, as the output "usage". Each round
 of each one is a step: it either finishes (whether or not it had anything to do) or
 raises. A step records its last success and last failure in publisher_health; the API
 serves them as registry_output_last_success_timestamp_seconds{output} (api.py), so an
 output that keeps failing alerts instead of only logging.
 
 A failing step waits `retry_after` seconds before its next try. Successes are written
-at most once a minute per output: the loop runs every few seconds.
+at most once a minute per output (`write_every`): the loop runs every few seconds. The
+usage job writes every run.
 """
 from __future__ import annotations
 

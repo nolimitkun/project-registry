@@ -606,7 +606,7 @@ def test_the_usage_page_shows_each_caller_the_projects_it_may_see(world):
     assert admin["budget_usd_30d"] == 25 and admin["cost_30d"] == pytest.approx(0.00025485)
     assert r["onprem"]["output_tokens"] == 18 and r["onprem"]["reference_usd"] > 0     # Qwen at Gemini 3.5 Flash's price
     assert {(m["model"], m["via_auto"]) for m in r["by_model"]} >= {("gemini-3.5-flash-lite", 1), ("qwen3.6-27b", 0)}
-    assert r["through"] == "2026-11-15T12:00:00+00:00"
+    assert r["through"] == "2026-11-15T11:30:00+00:00"
 
     app.dependency_overrides[api.current_user] = lambda: User("wendy", {"webui-owners"})
     r = client.get("/usage", params=day).json()                     # an owner: only its projects

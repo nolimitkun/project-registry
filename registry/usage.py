@@ -8,7 +8,8 @@ it charged (the same number the budgets count), status and duration. Alloy ships
 lines to Loki, which keeps them about a week. Each run:
 
 1. extract: every hour of the last BACKFILL_HOURS that has no raw file yet, and the
-   last LOOKBACK_HOURS whatever they have (lines arrive late), from Loki into
+   current hour and the LOOKBACK_HOURS before it whatever they have (lines arrive
+   late), from Loki into
    raw/date=D/hour=HH.parquet: one file per hour, rewritten whole, so a rerun is
    harmless;
 2. dims: today's records (projects with their owner group and budget, keys and the
@@ -21,7 +22,10 @@ lines to Loki, which keeps them about a week. Each run:
 4. state.json says what has been extracted, and the run records its health as the
    publisher output "usage" (health.py), which the stale-output alert watches.
 
-The dims are per day, so a day's spend is compared with the budget of that day.
+The dims are per day, so a request is joined with what was true that day: the agent its
+key belonged to, the model's placement and served name. The projects' (owner group,
+budget, limits) are kept for the record; the Usage page compares spend with the current
+budget, the one the rate limit enforces.
 Parquet goes through local files and boto3: DuckDB's own S3 support would download
 an extension at run time.
 """
@@ -50,15 +54,15 @@ FIELDS = {
     "reason": "reason", "gen_ai.provider.name": "provider", "gen_ai.request.model": "request_model",
     "agw.ai.original_model": "original_model", "gen_ai.usage.input_tokens": "input_tokens",
     "gen_ai.usage.output_tokens": "output_tokens", "agw.ai.usage.cost.total": "cost_usd",
-    "duration": "duration_ms", "mcp.method.name": "mcp_method", "mcp.tool.name": "mcp_tool",
-    "gen_ai.tool.name": "mcp_tool",
+    "duration": "duration_ms", "mcp.method.name": "mcp_method", "mcp.target": "mcp_target",
+    "gen_ai.tool.name": "mcp_tool",          # without its target's prefix: list_datasources
 }
 RAW_COLUMNS = {
     "ts": "TIMESTAMPTZ", "pod": "VARCHAR", "trace_id": "VARCHAR", "span_id": "VARCHAR", "project": "VARCHAR",
     "key_id": "VARCHAR", "protocol": "VARCHAR", "route": "VARCHAR", "status": "INTEGER", "path": "VARCHAR",
     "reason": "VARCHAR", "provider": "VARCHAR", "request_model": "VARCHAR", "original_model": "VARCHAR",
     "input_tokens": "BIGINT", "output_tokens": "BIGINT", "cost_usd": "DOUBLE", "duration_ms": "DOUBLE",
-    "mcp_method": "VARCHAR", "mcp_tool": "VARCHAR",
+    "mcp_method": "VARCHAR", "mcp_target": "VARCHAR", "mcp_tool": "VARCHAR",
 }
 PAIR = re.compile(r'([A-Za-z_][\w.]*)=("(?:[^"\\]|\\.)*"|\S*)')
 DURATION = re.compile(r"^([0-9.]+)(ns|µs|us|ms|s|m)?$")
@@ -239,7 +243,8 @@ def write_dims(bucket: Bucket, day: dt.date, dims: dict[str, list[dict]], tmp: P
 
 FACT_SQL = """
 WITH raw AS (
-  SELECT * FROM read_parquet({raw})
+  -- union_by_name: raw files written before a column existed have it as NULL
+  SELECT * FROM read_parquet({raw}, union_by_name = true)
 ), dedup AS (
   -- a line Loki returned twice, or an hour extracted twice: one row per request
   SELECT * FROM raw
@@ -269,7 +274,10 @@ SELECT ts, CAST(ts AS DATE) AS date, n.project, n.key_id, k.agent, n.protocol,
             WHEN status = 429 AND reason IS DISTINCT FROM 'Upstream' THEN 'limited'
             WHEN status = 401 THEN 'unauthenticated' ELSE 'error' END AS outcome,
        status, reason, coalesce(input_tokens, 0) AS input_tokens, coalesce(output_tokens, 0) AS output_tokens,
-       coalesce(cost_usd, 0) AS cost_usd, duration_ms, mcp_method, mcp_tool, trace_id
+       coalesce(cost_usd, 0) AS cost_usd, duration_ms, mcp_method,
+       -- a tool as the catalog and the policy name it: its target's prefix, then its name
+       CASE WHEN mcp_target IS NOT NULL AND mcp_tool IS NOT NULL THEN mcp_target || '_' || mcp_tool
+            ELSE mcp_tool END AS mcp_tool, trace_id
 FROM named n
 LEFT JOIN keys k ON k.key_id = n.key_id
 LEFT JOIN models m ON m.model = n.model
@@ -328,8 +336,8 @@ def run(bucket: Bucket, lines_of, records: dict, owners: dict[str, str], now: dt
         extract(bucket, lines_of, hours, tmp)
         write_dims(bucket, now.date(), dims_rows(records, owners), tmp)
         counts = {str(d): transform(bucket, d, tmp) for d in sorted({h.date() for h in hours})}
-    state = {"through": (now.replace(minute=0, second=0, microsecond=0) + HOUR).isoformat(),
-             "run_at": now.isoformat(), "hours": len(hours), "days": counts}
+    # complete up to the run: the current hour's lines so far (the next runs take it again)
+    state = {"through": now.isoformat(), "hours": len(hours), "days": counts}
     bucket.put("state.json", json.dumps(state, indent=1).encode())
     log.info("usage: %d hours extracted, days %s", len(hours), counts)
     return state
@@ -373,7 +381,7 @@ class Reader:
             return []
         con = _duck()
         files = "[" + ", ".join(f"'{p}'" for p in paths) + "]"
-        con.execute(f"CREATE VIEW t AS SELECT * FROM read_parquet({files}) "
+        con.execute(f"CREATE VIEW t AS SELECT * FROM read_parquet({files}, union_by_name = true) "
                     f"WHERE date BETWEEN DATE '{start}' AND DATE '{end}'")
         cur = con.execute(sql, params or [])
         cols = [d[0] for d in cur.description]
@@ -449,7 +457,7 @@ def report(reader: Reader, visible: set[str] | None, start: dt.date, end: dt.dat
 def requests_of(reader: Reader, project: str, day: dt.date, limit: int = 50) -> list[dict]:
     """A project's requests of one day, the dearest first."""
     return reader.query("fact", day, day, """SELECT strftime(ts, '%Y-%m-%dT%H:%M:%SZ') AS ts, key_id, agent, kind, model, virtual_model, outcome, status,
-                                                    input_tokens, output_tokens, cost_usd, duration_ms, mcp_method, trace_id
+                                                    input_tokens, output_tokens, cost_usd, duration_ms, mcp_method, mcp_tool, trace_id
                                              FROM t WHERE project = ? ORDER BY cost_usd DESC, ts DESC LIMIT ?""",
                         [project, limit])
 
