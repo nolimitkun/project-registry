@@ -136,6 +136,8 @@ def _duck():
     import duckdb
     con = duckdb.connect()
     con.execute("SET TimeZone = 'UTC'")
+    # within the pod's memory limit (the API's is 512 MiB), whatever DuckDB reads of the host
+    con.execute(f"SET memory_limit = '{os.environ.get('USAGE_DUCKDB_MEMORY', '256MB')}'")
     return con
 
 
