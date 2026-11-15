@@ -195,6 +195,10 @@ def test_metrics_and_export(world, monkeypatch):
     client = TestClient(app)
     m = client.get("/metrics").text
     assert '# TYPE project_budget_usd gauge' in m and 'project_budget_usd{project="admin"} 25.0' in m
+    assert ('model_price_usd_per_million_tokens{model="gemini-3.5-flash",'
+            'gen_ai_request_model="gemini-3.5-flash",gen_ai_token_type="output"}') in m
+    # a KServe model under the name its route sends, as the gateway's metrics carry it
+    assert 'model="qwen3.6-27b",gen_ai_request_model="unsloth/Qwen3.6-27B-NVFP4@' in m
     out = client.get("/export").json()
     assert out["revision"] == "projects-00000001"
     assert out["project"]["admin"]["limits"] == {"requests_per_minute": 60}

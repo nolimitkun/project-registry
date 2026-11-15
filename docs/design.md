@@ -66,7 +66,7 @@ flowchart LR
   gw[agentgateway] -->|ext_authz| opa
   opa -->|allow + limits in<br/>dynamic metadata| gw
   gw -->|descriptors with<br/>limitOverride| rl[rate-limit service]
-  api -->|/metrics: budgets,<br/>output health| prom[(Prometheus)]
+  api -->|/metrics: budgets, prices,<br/>output health| prom[(Prometheus)]
 ```
 
 ## Decisions
@@ -305,6 +305,13 @@ Before merging, `scripts/policy-replay.py` gives the replay from a checkout.
   rule, `GatewayProjectBudgetForecast`, joins it `on(project)` with the last
   24 hours of spend, so the number of rules no longer grows with projects, and
   a budget changed in the registry is the one the alert uses. Built.
+- **Price drift:** budgets are charged at agentgateway's built-in price table
+  (`llm.cost.total`; no CRD takes our own prices), while `auto` and the portal
+  use the catalog's. The registry exports `model_price_usd_per_million_tokens`,
+  labelled like the gateway's token metrics (a KServe model under its served
+  name), and `GatewayModelPriceDrift` fires when what the gateway charged for a
+  model differs from its tokens at the catalog price, which also catches a new
+  model the gateway's table doesn't know (charged $0). Built.
 - **Usage pages** in the portal read Prometheus (spend, requests),
   agentgateway Analytics and Langfuse. Not built: the PoC portal shows the
   records, changes and publications only.
@@ -332,7 +339,7 @@ POST   /changes/{id}/withdraw         its author or the platform team, before it
 GET    /publications                  published revisions, newest first
 GET    /export                        every record (the format of the seed and the snapshots)
 GET    /internal/bundles/{bundle}     the active bundle, for policy-replay.py (cluster-internal)
-GET    /metrics                       project_budget_usd and each publisher output's health, for Prometheus (cluster-internal)
+GET    /metrics                       project_budget_usd, model_price_usd_per_million_tokens and each publisher output's health, for Prometheus (cluster-internal)
 POST   /rollback/{revision}           platform team only
 POST   /opa/status                    OPA's status reports (cluster-internal)
 GET    /healthz
