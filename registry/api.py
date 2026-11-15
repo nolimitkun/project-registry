@@ -32,7 +32,9 @@ from .render import Renderer, RenderError, kagent_wiring_from_env, renderer_from
 
 KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception",
          # the catalog: proposed by the platform team (portal.may_submit)
-         "models": "model", "google-apis": "google_api", "tools": "tool", "catalog": "catalog"}
+         "models": "model", "google-apis": "google_api", "tools": "tool", "catalog": "catalog",
+         # the policy's parameters (data_classes, autonomy, approvals): platform team only
+         "settings": "setting"}
 PORTAL = Path(__file__).resolve().parent / "static" / "portal.html"
 
 
@@ -354,6 +356,22 @@ def create_app(reg: Registry) -> FastAPI:
             ch["approvals"] = c.execute("select approver, role, decision, comment, at from approval "
                                         "where change_id = %s order by at", (change_id,)).fetchall()
         return ch
+
+    @app.get("/changes/{change_id}/diff")
+    def change_diff(change_id: int, user: User = Depends(current_user)):
+        """A policy change's code, file by file, so approvers read it in the portal: the
+        active commit it was checked against, and the proposed one."""
+        from .policy import PolicySource
+        with reg.db.tx() as c:
+            ch = c.execute("select kind, before, after from change_request where id = %s", (change_id,)).fetchone()
+        if not ch:
+            raise HTTPException(404)
+        if ch["kind"] != "policy" or not (ch["before"] or {}).get("commit") or not (ch["after"] or {}).get("commit"):
+            raise HTTPException(400, "only a policy change has a code diff; a record change shows its fields")
+        try:
+            return PolicySource("main", reg.renderer).diff(ch["before"]["commit"], ch["after"]["commit"])
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(502, f"can't check out the commits: {(e.stderr or '')[-300:]}") from e
 
     @app.post("/changes/{change_id}/approve")
     def approve(change_id: int, body: Decision, user: User = Depends(current_user)):

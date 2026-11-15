@@ -409,3 +409,21 @@ def test_inert_paths():
     assert all(map(inert, ["README.md", "docs/a/b.md", ".github/workflows/ci.yml", "fixtures/records.yaml"]))
     assert not any(map(inert, ["scripts/gen-projects.py", "projects/schema.json", "charts/gateway-models/values.yaml",
                                "policies/gateway/authz.rego", "policies/gateway/README.txt"]))
+
+
+def test_a_policy_change_shows_its_diff_and_test_summary(world):
+    from fastapi.testclient import TestClient
+    from registry import api as apimod
+    db, watch, first = world["db"], world["watch"], world["first"]
+    (world["repo"] / "docs").mkdir()
+    (world["repo"] / "docs" / "why.md").write_text("because\n")
+    sha = commit(world["repo"], "rules", rule='data.projects[input.p].on; input.p != "z"')
+    cid = watch.propose()
+    with db.tx() as c:
+        report = c.execute("select replay_report from change_request where id = %s", (cid,)).fetchone()["replay_report"]
+    assert report["tests"].startswith("PASS")
+    d = watch.source.diff(first, sha)
+    files = {f["path"]: f for f in d["files"]}
+    assert files["docs/why.md"]["status"] == "added" and files["docs/why.md"]["inert"]
+    rule = files["policies/gateway/authz.rego"]
+    assert rule["status"] == "changed" and not rule["inert"] and '+' in rule["diff"] and 'input.p != "z"' in rule["diff"]

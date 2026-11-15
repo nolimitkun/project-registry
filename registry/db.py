@@ -55,11 +55,12 @@ create sequence if not exists bundle_seq;
 -- how each publisher output is doing (health.py), for /metrics
 create table if not exists publisher_health (
   output text primary key, last_success timestamptz, last_failure timestamptz, last_error text);
--- the record kinds: a project's records, and the catalog's (models, Google APIs, MCP
--- tools, and its settings), as a named constraint so a new kind is one migration
+-- the record kinds: a project's records, the catalog's (models, Google APIs, MCP
+-- tools, and its settings), and the policy's settings (data classes, autonomy,
+-- approvals), as a named constraint so a new kind is one migration
 alter table resource drop constraint if exists resource_kind_check;
 alter table resource add constraint resource_kind_check check (kind in (
-  'project', 'agent', 'exception', 'model', 'google_api', 'tool', 'catalog'));
+  'project', 'agent', 'exception', 'model', 'google_api', 'tool', 'catalog', 'setting'));
 -- the states, as a named constraint so a new state is one migration
 alter table change_request drop constraint if exists change_request_state_check;
 alter table change_request add constraint change_request_state_check check (state in (
@@ -93,7 +94,10 @@ def audit(c, actor: str, action: str, obj: str, before=None, after=None) -> None
 # catalog's settings (one record, "settings": tasks, servingNamespaces, MCP targets).
 PROJECT_KINDS = ("project", "agent", "exception")
 CATALOG_KINDS = ("model", "google_api", "tool", "catalog")
-KINDS = PROJECT_KINDS + CATALOG_KINDS
+# The policy's parameters reviewers decide (data_classes, autonomy, approvals): like the
+# catalog, a change to one may change any project's decisions.
+SETTING_KINDS = ("setting",)
+KINDS = PROJECT_KINDS + CATALOG_KINDS + SETTING_KINDS
 
 
 def resources(c) -> dict[str, dict[str, dict]]:

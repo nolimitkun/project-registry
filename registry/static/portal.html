@@ -37,6 +37,8 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
   button.danger { color: var(--bad); }
   .muted { color: var(--muted); } .error { color: var(--bad); white-space: pre-wrap; } .success { color: var(--ok); }
+  pre.diff span.add { color: var(--ok); } pre.diff span.del { color: var(--bad); } pre.diff span.hunk { color: var(--muted); }
+  details.file { margin: 6px 0; } details.file summary { cursor: pointer; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
   .login { text-align: center; padding: 60px 16px; }
@@ -47,6 +49,7 @@
   <h1>Project registry</h1>
   <nav id="nav" hidden>
     <button data-view="projects">Projects</button>
+    <button data-view="settings">Settings</button>
     <button data-view="changes">Changes</button>
     <button data-view="publications">Publications</button>
   </nav>
@@ -141,7 +144,7 @@ function describe(detail) {
 
 // --- views ---
 let me = null;
-const views = { projects: viewProjects, changes: viewChanges, publications: viewPublications };
+const views = { projects: viewProjects, settings: viewSettings, changes: viewChanges, publications: viewPublications };
 function show(view, arg) {
   for (const b of document.querySelectorAll("nav button")) b.classList.toggle("active", b.dataset.view === view);
   $main.replaceChildren(el("p", { class: "muted" }, "Loading…"));
@@ -179,6 +182,38 @@ async function viewProject(id) {
       el("p", { class: "muted" }, "A JSON merge patch over the record: set a field to change it, null to remove it. Nothing changes until it is approved and published."),
       patch, el("div", { class: "row" }, el("button", { class: "action primary", onclick: submit }, "Submit change")), msg),
     el("section", { class: "panel" }, el("h2", {}, "Changes to this project"), changesTable(changes)));
+}
+
+// The policy's parameters reviewers decide (the gateway policy's settings/schema.json).
+const SETTINGS = {
+  data_classes: "The placements each data class allows. A project's placements are capped by its class.",
+  autonomy: "The tool risks each agent autonomy may call without a human; anything else is refused with a reason.",
+  approvals: "Who approves each kind of change, on top of the floors the policy keeps in code: a project's owner for its records, the platform team for the policy, the catalog and these settings, security for the policy and these settings.",
+};
+
+async function viewSettings() {
+  const settings = await api("GET", "/settings");
+  const canPropose = me.groups.includes("platform-admins");
+  $main.replaceChildren(...Object.keys(SETTINGS).map((id) => settingPanel(id, settings[id], canPropose)));
+}
+
+function settingPanel(id, spec, canPropose) {
+  const text = el("textarea", {}, json(spec ?? {}));
+  const msg = el("p");
+  const submit = async () => {
+    msg.className = ""; msg.textContent = "Submitting…";
+    try {
+      const body = { spec: JSON.parse(text.value) };
+      const ch = spec === undefined ? await api("POST", `/settings/${id}`, body) : await api("PATCH", `/settings/${id}`, body);
+      msg.className = "success"; msg.textContent = `Change ${ch.id} submitted; it needs: ${ch.required_approvals.join(", ")}. Its replay shows what it would change.`;
+    } catch (e) { msg.className = "error"; msg.textContent = e.message; }
+  };
+  return el("section", { class: "panel" }, el("h2", {}, id),
+    el("p", { class: "muted" }, SETTINGS[id] + (spec === undefined ? " Not set: the policy's own values apply." : "")),
+    text,
+    canPropose ? el("div", { class: "row" }, el("button", { class: "action primary", onclick: submit }, spec === undefined ? "Propose" : "Propose a change"))
+               : el("p", { class: "muted" }, "The platform team proposes a change; the platform team and security approve it."),
+    msg);
 }
 
 function newProjectPanel() {
@@ -260,14 +295,31 @@ async function viewChange(cid) {
         el("tbody", {}, c.replay_report.examples.map((f) => el("tr", {}, [f.project, f.path, f.model, f.before ? "allowed" : "denied", f.after ? "allowed" : "denied"].map((v) => el("td", {}, v ?? "")))))) : null) : null);
 }
 
-// A policy change: a commit of the Rego in Git, reviewed there; approved here before OPA loads it.
+// A policy change: a commit of the policy repository, approved here before OPA loads it. Its
+// diff is read here, file by file; files no publish reads (docs, CI) start folded.
 function policyPanel(c) {
   const a = c.after || {}, from = (c.before || {}).commit || "";
   const compare = a.url && from ? a.url.replace(/\/commit\/.*$/, `/compare/${from}...${a.commit}`) : null;
+  const tests = (c.replay_report || {}).tests;
+  const files = el("div", {}, el("p", { class: "muted" }, "Loading the diff…"));
+  api("GET", `/changes/${c.id}/diff`).then((d) => files.replaceChildren(...diffFiles(d)))
+    .catch((e) => files.replaceChildren(el("p", { class: "error" }, e.message)));
   return el("section", { class: "panel" }, el("h2", {}, "What changes"),
     el("p", {}, el("strong", {}, a.subject || ""), ` · ${a.author || ""} · branch ${a.ref || ""}`),
-    el("p", {}, `From ${from.slice(0, 12)} to ${(a.commit || "").slice(0, 12)}. `,
-      compare ? el("a", { href: compare, target: "_blank", rel: "noopener" }, "The diff on GitHub") : null));
+    el("p", {}, `From ${from.slice(0, 12)} to ${(a.commit || "").slice(0, 12)}.`,
+      tests ? ` opa test: ${tests}.` : "",
+      compare ? [" ", el("a", { href: compare, target: "_blank", rel: "noopener" }, "On GitHub")] : null),
+    files);
+}
+
+function diffFiles(d) {
+  if (!d.files.length) return [el("p", { class: "muted" }, "No file differs.")];
+  return d.files.map((f) => el("details", f.inert ? { class: "file" } : { class: "file", open: "" },
+    el("summary", {}, `${f.path} `, el("span", { class: "chip" }, f.status), f.inert ? el("span", { class: "muted" }, " docs or CI: no publish reads it") : null),
+    f.binary ? el("p", { class: "muted" }, "A binary file.")
+      : f.truncated ? el("p", { class: "muted" }, "Too large to show here.")
+      : el("pre", { class: "diff" }, (f.diff || "").split("\n").map((l) => el("span", {
+          class: l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : "" }, l + "\n")))));
 }
 
 async function viewPublications() {

@@ -62,7 +62,7 @@ class Everyone(set):
 
 
 def projects_touched(change: dict) -> set[str]:
-    if change["kind"] in dbm.CATALOG_KINDS:
+    if change["kind"] in dbm.CATALOG_KINDS + dbm.SETTING_KINDS:
         return Everyone()
     if change["kind"] in ("project", "exception"):
         return {change["object_id"]}

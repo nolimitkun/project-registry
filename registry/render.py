@@ -132,19 +132,24 @@ class Renderer:
                 (work / "projects" / "_exceptions.yaml").write_text(
                     yaml.safe_dump({"exceptions": records["exception"]}, sort_keys=False))
             write_catalog(work, records)
+            (work / "settings").mkdir(exist_ok=True)
+            for sid, spec in (records.get("setting") or {}).items():
+                (work / "settings" / f"{sid}.yaml").write_text(yaml.safe_dump(spec, sort_keys=False))
             yield work
 
     @staticmethod
     def _gen(work: Path, *args: str, env: dict[str, str] | None = None) -> str:
         env = {**os.environ, **(env or {})}
-        # The catalog first (validated, rendered to data.registry.catalog and the gateway's values),
-        # then the projects, which are checked against it.
-        if (work / "scripts" / "gen-catalog.py").exists():
-            cat = subprocess.run([sys.executable, "scripts/gen-catalog.py"], cwd=work,
-                                 capture_output=True, text=True, env=env)
-            if cat.returncode != 0:
-                errors = [l.strip() for l in (cat.stderr or cat.stdout).splitlines() if l.strip()]
-                raise RenderError(errors or ["gen-catalog.py failed"])
+        # The settings and the catalog first (validated, rendered to data.registry.settings,
+        # data.registry.catalog and the gateway's values), then the projects, which are
+        # checked against them.
+        for script in ("gen-settings.py", "gen-catalog.py"):
+            if (work / "scripts" / script).exists():
+                run = subprocess.run([sys.executable, f"scripts/{script}"], cwd=work,
+                                     capture_output=True, text=True, env=env)
+                if run.returncode != 0:
+                    errors = [l.strip() for l in (run.stderr or run.stdout).splitlines() if l.strip()]
+                    raise RenderError(errors or [f"{script} failed"])
         run = subprocess.run([sys.executable, "scripts/gen-projects.py", *args], cwd=work,
                              capture_output=True, text=True, env=env)
         if run.returncode != 0:
