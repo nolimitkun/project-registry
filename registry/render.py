@@ -2,8 +2,8 @@
 policy repository's scripts/gen-projects.py, at the commit of the active policy bundle.
 
 One validation library: the schema, the rules across files and the output format
-stay in the policy repository (nolimitkun/gateway-policy), reviewed with the Rego
-and the catalog. The
+stay with the policy (this repository's policy/, POLICY_SUBDIR), reviewed with the
+Rego. The
 registry writes its records as the project, agent and exception files that script
 reads, runs it, and takes policies/gateway-projects. The records themselves live
 only in the registry; Git keeps the schema and the script, not a copy of them.
@@ -24,8 +24,11 @@ import yaml
 
 
 def renderer_from_env(env) -> "Renderer":
-    """The policy repository (POLICY_REPO) and a cache of its checkouts."""
-    return Renderer(env["POLICY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts")
+    """The policy repository (POLICY_REPO), the directory in it the policy is in
+    (POLICY_SUBDIR: "policy" in this repository; none for a repository that is only the
+    policy), and a cache of its checkouts."""
+    return Renderer(env["POLICY_REPO"], Path(env.get("WORKDIR", "/tmp/registry")) / "checkouts",
+                    subdir=env.get("POLICY_SUBDIR") or None)
 
 
 class KagentWiring:
@@ -95,11 +98,14 @@ class RenderError(Exception):
 
 
 class Renderer:
-    def __init__(self, repo: str, cache: Path):
-        self.repo, self.cache = repo, cache
+    def __init__(self, repo: str, cache: Path, subdir: str | None = None):
+        self.repo, self.cache, self.subdir = repo, cache, subdir
         cache.mkdir(parents=True, exist_ok=True)
 
     def checkout(self, revision: str) -> Path:
+        """The policy at a commit: the checkout's subdir, where one is set. Everything that
+        renders, tests or builds the policy sees only that directory (render.prepared copies
+        it alone), so nothing outside it can change a bundle."""
         path = self.cache / revision
         if not (path / ".git").exists():
             tmp = Path(tempfile.mkdtemp(dir=self.cache))
@@ -111,7 +117,7 @@ class Renderer:
                 raise subprocess.CalledProcessError(fetch.returncode, fetch.args, fetch.stdout, fetch.stderr)
             subprocess.run(["git", "-C", str(tmp), "checkout", "-q", "FETCH_HEAD"], check=True)
             tmp.rename(path)
-        return path
+        return path / self.subdir if self.subdir else path
 
     @contextmanager
     def prepared(self, records: dict[str, dict[str, dict]], revision: str):

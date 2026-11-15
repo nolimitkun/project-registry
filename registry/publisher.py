@@ -212,10 +212,8 @@ class Publisher:
                 raise                                       # the publisher's own failure: health sees it
             return None
 
-    # gen-projects.py writes agentregistry's Agent entries here, in the checkout it runs in: in
-    # gateway-policy, or in a policy commit from before it (the deployment repo's path)
-    AGENTREGISTRY_FILES = ("generated/agentregistry-agents.yaml",
-                           "minikube/gitops/agentregistry-catalog/files/agents.yaml")
+    # gen-projects.py writes agentregistry's Agent entries here, in the policy it runs in
+    AGENTREGISTRY_FILES = ("generated/agentregistry-agents.yaml",)
 
     def sync_agentregistry(self, url: str | None) -> int | None:
         """Applies the registered agents to agentregistry's catalog (/v0/apply: idempotent,

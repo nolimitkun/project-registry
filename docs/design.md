@@ -2,7 +2,8 @@
 
 > Moved here from nolimitkun/mini-platform-deployment (`docs/project-registry.md`) on
 > 2026-11-14. Paths such as `minikube/...` and `scripts/...` are in that repo;
-> `policies/`, `catalog/` and the record schemas are in nolimitkun/gateway-policy.
+> `policies/` and the record schemas are in this repository's `policy/` (until 2026-11-15
+> nolimitkun/gateway-policy).
 
 Status: **proof of concept built and deployed on minikube** (2026-11-13): the
 core below, in [nolimitkun/project-registry](https://github.com/nolimitkun/project-registry)
@@ -12,7 +13,7 @@ and the `project-registry` and `opa-policy` apps, with a portal page at
 design and what was measured.
 
 Today a project is a file, `projects/<id>.yaml`, changed by pull request.
-[multi-project-policy.md](https://github.com/nolimitkun/gateway-policy/blob/main/docs/design.md) records that design and
+[multi-project-policy.md](../policy/docs/design.md) records that design and
 how it was built. It works for about 200 projects. This document is the next
 step, for 1,000 projects or more on several sites, edited through a portal.
 
@@ -34,7 +35,7 @@ step, for 1,000 projects or more on several sites, edited through a portal.
   [Why OCP goes](#why-ocp-goes)).
 
 **Out of scope:** the Rego policy, the record schemas and the gateway-models
-chart stay in Git ([nolimitkun/gateway-policy](https://github.com/nolimitkun/gateway-policy)),
+chart stay in Git (this repository's [`policy/`](../policy/README.md)),
 reviewed by the platform team in pull requests; the registry decides only when a
 merged commit reaches OPA. The model and tool catalog was in Git too, and is now
 records here like a project's (see [Where the records are](#where-the-records-are-and-their-copies)).

@@ -1,7 +1,7 @@
-"""End to end on a real Postgres and the real gen-projects.py of the policy repo.
+"""End to end on a real Postgres and the real renderers of the policy (policy/).
 
-Needs TEST_DATABASE_URL (a disposable database) and, optionally, POLICY_REPO
-(default: nolimitkun/gateway-policy) and POLICY_REVISION (default: its main).
+Needs TEST_DATABASE_URL (a disposable database). The policy is this repository's policy/
+at HEAD (commit first), or POLICY_REPO / POLICY_SUBDIR / POLICY_REVISION.
 """
 import json
 import os
@@ -20,7 +20,11 @@ from tests.test_bundles import OPA, FakeS3
 DSN = os.environ.get("TEST_DATABASE_URL")
 # The platform's own projects, as the project-registry chart seeds a new cluster with
 SEED = json.loads((Path(__file__).parent / "fixtures" / "seed.json").read_text())
-REPO = os.environ.get("POLICY_REPO", "https://github.com/nolimitkun/gateway-policy.git")
+# The policy: this repository's policy/ at HEAD by default, so the code and the policy
+# are tested together (POLICY_REPO / POLICY_SUBDIR / POLICY_REVISION for another).
+ROOT = Path(__file__).resolve().parent.parent
+REPO = os.environ.get("POLICY_REPO", str(ROOT))
+SUBDIR = os.environ.get("POLICY_SUBDIR", "policy" if REPO == str(ROOT) else "") or None
 pytestmark = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL not set")
 
 ALICE = User("alice", {"platform-admins"})              # platform team, owner of every project
@@ -33,6 +37,8 @@ def head(repo):
     rev = os.environ.get("POLICY_REVISION")
     if rev:
         return rev
+    if repo == str(ROOT):
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
     out = subprocess.run(["git", "ls-remote", repo, "refs/heads/main"], capture_output=True, text=True, check=True)
     return out.stdout.split()[0]
 
@@ -51,7 +57,7 @@ def world(tmp_path, monkeypatch):
     store.put_revision("gateway-policy", policy_rev, tmp_path / "p")
     store.activate("gateway-policy", policy_rev)
     signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "opa-bundles")
-    renderer = render.Renderer(REPO, tmp_path / "checkouts")
+    renderer = render.Renderer(REPO, tmp_path / "checkouts", subdir=SUBDIR)
     # the catalog and the settings: a seed carries them, like the deployment's (the policy's
     # test fixture)
     fixture = yaml.safe_load((renderer.checkout(policy_rev) / "fixtures" / "records.yaml").read_text())

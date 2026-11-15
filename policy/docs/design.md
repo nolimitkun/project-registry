@@ -1,6 +1,6 @@
 # Design: per-project model policy at scale
 
-> Moved here from nolimitkun/mini-platform-deployment (`docs/multi-project-policy.md`)
+> Moved from nolimitkun/mini-platform-deployment (`docs/multi-project-policy.md`) to nolimitkun/gateway-policy, then with it into the project registry's `policy/`
 > on 2026-11-14. Paths such as `minikube/...` are in that repo; the policy and
 > catalog paths are in this one.
 

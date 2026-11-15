@@ -439,3 +439,39 @@ def test_a_diff_survives_a_file_replaced_by_a_directory(world):
     b = commit(world["repo"], "notes as a directory")
     files = {f["path"]: f["status"] for f in watch.source.diff(a, b)["files"]}
     assert files == {"notes": "removed", "notes/one.md": "added"}
+
+
+def test_a_commit_that_changes_nothing_in_the_policy_is_followed(world):
+    db, store, watch, first = world["db"], world["store"], world["watch"], world["first"]
+    git("commit", "-q", "--allow-empty", "-m", "the registry's own code", cwd=world["repo"])
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=world["repo"], capture_output=True, text=True).stdout.strip()
+    assert watch.propose() is None
+    assert store.active("gateway-policy") == sha                     # the same bundle, under the new commit
+    with db.tx() as c:
+        assert not c.execute("select 1 from change_request where kind = 'policy' and object_id = %s", (sha,)).fetchone()
+        assert c.execute("select 1 from audit_log where action = 'follow' and object = %s",
+                         (f"gateway-policy@{sha}",)).fetchone()
+    assert first != sha
+
+
+def test_the_policy_is_only_its_subdirectory(tmp_path):
+    from registry import render as rmod
+    from registry.policy import PolicySource
+    repo = tmp_path / "repo"
+    (repo / "policy").mkdir(parents=True)
+    (repo / "policy" / "rule.rego").write_text("package x\n")
+    (repo / "registry.py").write_text("print(1)\n")
+    git("init", "-q", "-b", "main", cwd=repo)
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "one", cwd=repo)
+    a = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    (repo / "registry.py").write_text("print(2)\n")
+    git("commit", "-qam", "the registry's code", cwd=repo)
+    b = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    (repo / "policy" / "rule.rego").write_text("package x\n\nallow := true\n")
+    git("commit", "-qam", "the policy", cwd=repo)
+    c = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    source = PolicySource("main", rmod.Renderer(str(repo), tmp_path / "cache", subdir="policy"))
+    assert source.renderer.checkout(a).name == "policy" and not (source.renderer.checkout(a) / "registry.py").exists()
+    assert source.changed(a, b) == set()
+    assert source.changed(b, c) == {"rule.rego"}

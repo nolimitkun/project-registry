@@ -1,6 +1,6 @@
-# gateway-policy
+# policy/
 
-The policy of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway. OPA decides every model call, Google API call and MCP tool call that agentgateway receives, with what is in this repo:
+The policy of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway, in the project registry's repository. OPA decides every model call, Google API call and MCP tool call that agentgateway receives, with what is in this directory. The registry publishes it: whatever renders, tests or builds the policy sees only this directory, so the registry's own code beside it never changes a bundle.
 
 | Path | What |
 |---|---|
@@ -18,25 +18,25 @@ The policy of [Mini Platform](https://github.com/nolimitkun/mini-platform-deploy
 The records themselves are not here: the projects, agents and exceptions, and the
 catalog (every model and Google API with its placement, provider settings and price;
 every MCP tool with the most it can do; the task classes behind `auto`, the serving
-namespaces, the MCP targets) live in the [project registry](https://github.com/nolimitkun/project-registry),
+namespaces, the MCP targets) live in the project registry's database,
 and change there, approved as `portal.rego` says. So do the policy's parameters that
 reviewers decide, as setting records: the placements each data class allows, what each
 agent autonomy may do without a human, and who approves each kind of change
 (`portal.rego` says what a change does and keeps the floors no setting can lower: a
 project's owner for its records, the platform team for the policy, the catalog and the
-settings, security for the policy and the settings). This repo has the rules, their
-format and the renderers.
+settings, security for the policy and the settings). This directory has the rules,
+their format and the renderers.
 
 ## How a change goes live
 
-1. A pull request here, with CI (`scripts/validate.sh`): the test records render (projects and the catalog), the chart renders with them, the Rego passes `opa check`, `opa fmt` and `opa test`, and both bundles build and load together.
+1. A pull request to this repository, with CI: `policy/scripts/validate.sh` (the test records render, the chart renders with them, the Rego passes `opa check`, `opa fmt` and `opa test`, and both bundles build and load together), and the registry's tests with the policy of the same commit. A change to the registry and to the policy (a new record kind, say) is one pull request.
 2. Merged to `main`, nothing changes yet. Within a minute the project registry files the commit as a **policy change request**:
    - it tests the commit with its live records rendered at it;
    - it builds and signs the bundle;
    - it replays recent decisions under the active bundles and under the new ones.
 
-   A commit under which neither bundle changes is recorded as `skipped`.
-3. The approvers decide in the registry's portal. `portal.rego` (the active one) says who approves: the platform team and security. Then the registry publishes the bundle, and OPA verifies its signature and loads it.
+   A commit that changes nothing in `policy/` (the registry's code only) is followed with no request: the same bundle under the new commit. One that changes only docs or CI here, and neither bundle, is recorded as `skipped`.
+3. The approvers decide in the registry's portal, where they read the diff file by file. `portal.rego` (the active one) says who approves: the platform team and security. Then the registry publishes the bundle, and OPA verifies its signature and loads it.
 
 **What the gateway takes from here**, through the project registry, not a pin: the
 registry packages `charts/gateway-models` at the active policy commit with its catalog
@@ -44,7 +44,7 @@ records rendered as values, and publishes it to its Helm repository in MinIO whe
 either changes; the deployment repo's Argo CD application `gateway-models` installs the
 newest version. A new model is therefore one approved catalog change in the registry
 (plus its serving release in the deployment repo, for a self-hosted one); a change to
-the chart here is a policy change.
+the chart in this directory is a policy change.
 
 The deployment repo's CI checks its own wiring against its registry seed (the catalog a
 new cluster starts with): its MCP targets, serving namespaces and the semantic router's
@@ -55,6 +55,7 @@ API keys themselves the registry writes to Vault from its records.
 ## Locally
 
 ```bash
+cd policy
 pip install jsonschema pyyaml          # and opa and helm on PATH
 ./scripts/validate.sh                  # what CI runs
 python3 scripts/render-records.py fixtures/records.yaml --out /tmp/gp && opa test policies/gateway /tmp/gp
@@ -62,4 +63,4 @@ python3 scripts/tools-drift.py         # needs the cluster: the gateway's MCP to
 python3 scripts/policy-replay.py       # needs the cluster: Loki, and the active data from the registry
 ```
 
-The history of these files before this repo is in the deployment repo (`policies/`, `catalog/`, `scripts/gen-*.py`); the catalog's last files here are in this repo's history, before it moved to the registry.
+This directory was nolimitkun/gateway-policy until 2026-11-15, and its history came along (`git log -- policy/`); before that the files were in the deployment repo (`policies/`, `catalog/`, `scripts/gen-*.py`).
