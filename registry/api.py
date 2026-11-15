@@ -52,6 +52,20 @@ class PreviewIn(ChangeIn):
     op: str = "update"                   # create, update, delete
 
 
+class ExplainIn(BaseModel):
+    project: str
+    kind: str                            # model, tool, google, models (the listing)
+    name: str | None = None              # the model, tool or Google API
+    key_id: str | None = None            # default: the project's own key
+
+
+def like(q: str | None) -> str | None:
+    """A search term as an ILIKE pattern, its own % and _ taken literally."""
+    if not q:
+        return None
+    return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
 class Decision(BaseModel):
     comment: str | None = None
 
@@ -354,10 +368,12 @@ def create_app(reg: Registry) -> FastAPI:
 
     @app.get("/changes")
     def list_changes(state: str | None = None, object_id: str | None = None, limit: int = 50,
-                     awaiting: str | None = None, user: User = Depends(current_user)):
+                     awaiting: str | None = None, kind: str | None = None, q: str | None = None,
+                     offset: int = 0, user: User = Depends(current_user)):
         """Change requests, newest first, with their approvals and `yours`: the open approvals
         the caller may give. state=open for the ones still waiting (pending_approval,
-        approved, publishing); awaiting=me for the ones waiting for the caller."""
+        approved, publishing); awaiting=me for the ones waiting for the caller. kind: one
+        record kind; q: part of the object id or of the author's name; offset: paging."""
         states = {"open": ["pending_approval", "approved", "publishing"]}.get(state, [state] if state else None)
         if awaiting not in (None, "me"):
             raise HTTPException(422, "awaiting takes only me")
@@ -369,8 +385,11 @@ def create_app(reg: Registry) -> FastAPI:
                               from change_request
                               where (%(states)s::text[] is null or state = any(%(states)s))
                                 and (%(oid)s::text is null or object_id = %(oid)s)
-                              order by id desc limit %(limit)s""",
-                           {"states": states, "oid": object_id, "limit": max(1, min(limit, 500))}).fetchall()
+                                and (%(kind)s::text is null or kind = %(kind)s)
+                                and (%(q)s::text is null or object_id ilike %(q)s or created_by ilike %(q)s)
+                              order by id desc limit %(limit)s offset %(offset)s""",
+                           {"states": states, "oid": object_id, "kind": kind, "q": like(q),
+                            "limit": max(1, min(limit, 500)), "offset": max(0, offset)}).fetchall()
             ids = [r["id"] for r in rows]
             approvals = {}
             for a in c.execute("select change_id, approver, role, decision, comment, at from approval "
@@ -528,6 +547,35 @@ def create_app(reg: Registry) -> FastAPI:
             return insight.effective(insight.ask_opa(reg.opa_url, oid))
         except (requests.RequestException, RuntimeError) as e:
             raise HTTPException(503, f"OPA did not answer: {e}") from e
+
+    @app.post("/explain")
+    def explain(body: ExplainIn, user: User = Depends(current_user)):
+        """Would the gateway let this project (with this key, by default its own) make this
+        call now, and if not, authz.rego's reason and what would change it."""
+        if body.kind not in insight.KINDS:
+            raise HTTPException(422, f"kind is one of {', '.join(insight.KINDS)}")
+        if body.kind != "models" and not body.name:
+            raise HTTPException(422, f"name the {body.kind}")
+        try:
+            return insight.explain(reg.opa_url, body.project, body.kind, body.name, body.key_id)
+        except (requests.RequestException, RuntimeError) as e:
+            raise HTTPException(503, f"OPA did not answer: {e}") from e
+
+    @app.get("/audit")
+    def audit_log(actor: str | None = None, action: str | None = None, q: str | None = None,
+                  limit: int = 100, offset: int = 0, user: User = Depends(current_user)):
+        """The audit log, newest first: who did what to which object. For the platform
+        team, security and the cost owners. q: part of the object."""
+        if not set(ROLE_GROUPS.values()) & user.groups:
+            raise HTTPException(403, "the audit log is for the platform team, security and the cost owners")
+        with reg.db.tx() as c:
+            return c.execute("""select seq, at, actor, action, object, before, after from audit_log
+                                where (%(actor)s::text is null or actor = %(actor)s)
+                                  and (%(action)s::text is null or action = %(action)s)
+                                  and (%(q)s::text is null or object ilike %(q)s)
+                                order by seq desc limit %(limit)s offset %(offset)s""",
+                             {"actor": actor, "action": action, "q": like(q),
+                              "limit": max(1, min(limit, 500)), "offset": max(0, offset)}).fetchall()
 
     @app.get("/status")
     def platform_status(user: User = Depends(current_user)):

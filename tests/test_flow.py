@@ -750,3 +750,75 @@ def test_the_status_page_compares_what_opa_loaded_with_what_is_published(world, 
     assert "ZeroDivisionError" in outputs["agentregistry"]["last_error"]
     assert [a["name"] for a in s["alerts"]["alerts"]] == ["GatewayModelPriceDrift"]  # only the gateway's and the registry's
     assert s["alerts"]["alerts"][0]["labels"] == {"model": "m"}
+
+
+def test_why_denied_evaluates_the_gateway_policy_and_the_audit_log_is_for_approvers(world, monkeypatch, tmp_path):
+    """/explain runs authz.rego (the opa binary over this repository's policy and the
+    imported data) on the input the gateway would send; /audit and the changes filters."""
+    from fastapi.testclient import TestClient
+    from registry import insight
+    db, store, reg, roles = world["db"], world["store"], world["reg"], world["roles"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    data = store.fetch("gateway-projects", store.active("gateway-projects"), tmp_path / "data.tar.gz")
+    policy = Path(world["renderer"].checkout(head(REPO))) / "policies"
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.body
+
+    world_opa = insight.requests.post        # the world's fake: approvals and may_submit
+
+    def opa_query(url, json=None, timeout=None):
+        if url != "http://opa/v1/query":
+            return world_opa(url, json=json, timeout=timeout)
+        out = subprocess.run([OPA, "eval", "-f", "json", "-d", str(policy), "-b", str(data), "-I", json["query"]],
+                             input=__import__("json").dumps(json["input"]), capture_output=True, text=True, check=True)
+        return Resp({"result": [r["bindings"] for r in __import__("json").loads(out.stdout).get("result", [])]})
+
+    monkeypatch.setattr(insight.requests, "post", opa_query)
+    app = api.create_app(reg)
+    client = TestClient(app)
+    as_ = lambda u: app.dependency_overrides.__setitem__(api.current_user, lambda: u)  # noqa: E731
+    as_(ALICE)
+
+    ok = client.post("/explain", json={"project": "admin", "kind": "model", "name": "qwen3.6-27b"}).json()
+    assert ok["allowed"] and ok["key_id"] == "admin" and ok["reason"] is None
+    agent = client.post("/explain", json={"project": "holmes", "kind": "model", "name": "gemini-4-argon"}).json()
+    assert not agent["allowed"] and agent["key_id"] == "holmes" and agent["agent"] == "holmes"
+    assert agent["reason"] == "model gemini-4-argon is not allowed for agent holmes (project holmes)"
+    assert agent["hint"].startswith("Widen the agent's models patterns")
+    write = client.post("/explain", json={"project": "holmes", "kind": "tool", "name": "grafana_create_incident"}).json()
+    assert not write["allowed"] and "needs a human approval" in write["reason"] and "autonomy" in write["hint"]
+    tool = client.post("/explain", json={"project": "open-webui", "kind": "tool", "name": "grafana_list_datasources"}).json()
+    assert tool["hint"] == "Add a pattern for it to the project's MCP tools."
+    assert client.post("/explain", json={"project": "nobody", "kind": "model", "name": "x"}).json()["reason"] == "unknown project"
+    assert client.post("/explain", json={"project": "admin", "kind": "listing"}).status_code == 422
+    assert client.post("/explain", json={"project": "admin", "kind": "tool"}).status_code == 422
+
+    # the changes list: by kind, by a part of the object id, a page at a time
+    roles["value"] = ["project_owner"]
+    for rpm in (31, 32, 33):
+        ch = reg.submit(ALICE, "project", "holmes", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": rpm}}))
+        reg.withdraw(ALICE, ch["id"], None)
+    reg.submit(ALICE, "project", "kagent", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 7}}))
+    page = client.get("/changes", params={"q": "olm", "limit": 2}).json()
+    assert [c["object_id"] for c in page] == ["holmes", "holmes"]
+    rest = client.get("/changes", params={"q": "olm", "limit": 2, "offset": 2}).json()
+    assert len(rest) == 1 and rest[0]["id"] < page[-1]["id"]
+    assert client.get("/changes", params={"kind": "agent"}).json() == []
+    assert client.get("/changes", params={"q": "%"}).json() == []          # a literal %, not a wildcard
+
+    # the audit log: the approver groups only
+    entries = client.get("/audit", params={"action": "withdraw"}).json()
+    assert len(entries) == 3 and all(e["actor"] == "alice" for e in entries)
+    assert client.get("/audit", params={"q": "project/kag"}).json()[0]["action"] == "change_update"
+    as_(COST)
+    assert client.get("/audit", params={"limit": 1}).status_code == 200
+    as_(User("dev", {"some-team"}))
+    assert client.get("/audit").status_code == 403

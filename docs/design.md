@@ -352,6 +352,9 @@ POST   /changes/{id}/withdraw         its author or the platform team, before it
 GET    /projects/{id}/effective       what it can use now, asked of the gateway's OPA (data.gateway.lib)
 GET    /status                        OPA's loaded bundles against the published ones, publisher outputs,
                                       the usage ledger, the gateway's and the registry's alerts
+POST   /explain                       would the gateway allow this call (project, key, model/tool/API), and why not
+GET    /audit                         the audit log (actor, action, q); approver groups only
+GET    /changes                       state, kind, q (object or author), limit, offset; awaiting=me
 GET    /publications                  published revisions, newest first
 GET    /export                        every record (the format of the seed and the snapshots)
 GET    /internal/bundles/{bundle}     the active bundle, for policy-replay.py (cluster-internal)
@@ -374,6 +377,8 @@ Keycloak account of the realm. The portal shows:
 - agents, exceptions and the catalog, read only;
 - a status page: what each OPA pod loaded, the publisher's outputs, the usage
   ledger and the alerts;
+- why a call is refused, under the policy loaded now;
+- the audit log, filters and paging on the changes, CSV export;
 - a form to propose a change (a JSON merge patch over the record) or to
   request a new project;
 - every change request with its diff, its approvals and the replay report,
