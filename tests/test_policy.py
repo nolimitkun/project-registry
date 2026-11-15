@@ -427,3 +427,15 @@ def test_a_policy_change_shows_its_diff_and_test_summary(world):
     assert files["docs/why.md"]["status"] == "added" and files["docs/why.md"]["inert"]
     rule = files["policies/gateway/authz.rego"]
     assert rule["status"] == "changed" and not rule["inert"] and '+' in rule["diff"] and 'input.p != "z"' in rule["diff"]
+
+
+def test_a_diff_survives_a_file_replaced_by_a_directory(world):
+    watch, first = world["watch"], world["first"]
+    (world["repo"] / "notes").write_text("a file\n")
+    a = commit(world["repo"], "notes as a file")
+    (world["repo"] / "notes").unlink()
+    (world["repo"] / "notes").mkdir()
+    (world["repo"] / "notes" / "one.md").write_text("now a directory\n")
+    b = commit(world["repo"], "notes as a directory")
+    files = {f["path"]: f["status"] for f in watch.source.diff(a, b)["files"]}
+    assert files == {"notes": "removed", "notes/one.md": "added"}

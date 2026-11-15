@@ -115,12 +115,13 @@ class PolicySource:
         wa, wb = self.renderer.checkout(a), self.renderer.checkout(b)
         files, used = [], 0
         for path in sorted(self.changed(a, b)):
+            # a file on one side may be a directory (or nothing) on the other: absent there
             pa, pb = wa / path, wb / path
-            status = "added" if not pa.exists() else "removed" if not pb.exists() else "changed"
+            status = "added" if not pa.is_file() else "removed" if not pb.is_file() else "changed"
             entry = {"path": path, "status": status, "inert": inert(path)}
             try:
-                old = pa.read_text().splitlines(keepends=True) if pa.exists() else []
-                new = pb.read_text().splitlines(keepends=True) if pb.exists() else []
+                old = pa.read_text().splitlines(keepends=True) if pa.is_file() else []
+                new = pb.read_text().splitlines(keepends=True) if pb.is_file() else []
             except UnicodeDecodeError:
                 entry["binary"] = True
                 files.append(entry)
