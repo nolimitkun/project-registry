@@ -22,7 +22,7 @@ A project data change goes like this:
    | `platform` | the `platform-admins` group |
 
    Two rules hold for every change: nobody approves their own change, and nobody bypasses approval. Who may propose a change at all is policy too (`data.portal.may_submit`): anyone may request a new project; otherwise only the project's owner group and the platform team.
-3. **Publishing.** The publisher takes approved changes in batches and:
+3. **Publishing.** The publisher takes approved changes in batches (an approval wakes it at once: the API sends a Postgres `NOTIFY` in the approving transaction, `registry/wakeup.py`; the outbox stays the record, so a missed notice costs at most a round of 5 s; after a publish it waits `MIN_INTERVAL`, so OPA reloads at most that often) and:
    1. applies them;
    2. renders the bundle;
    3. replays recent gateway decisions from Loki. A change may only change decisions for the projects it touches. Otherwise it is marked `failed` and nothing is published;
@@ -58,7 +58,7 @@ None of these is a backup of the database (approvals, audit log).
 - the gateway's API keys: the publisher writes Vault's two key maps from the records, after each data bundle and every five minutes (`GATEWAY_KEYS_MOUNT`, `registry/keys.py`): `agentgateway-api-keys`, which the gateway reads, and `agentgateway-client-keys`, the raw keys every client's copy is a VSO transformation of. A new key id gets a key, a removed one is revoked, an existing one keeps its key.
 - `/internal/bundles/<bundle>`: the active bundle, for `scripts/policy-replay.py`.
 - agentregistry's catalog of registered agents: the publisher applies it after each publish and every hour (`AGENTREGISTRY_URL`).
-- the gateway's model routes: once a policy commit is active, the publisher packages its `charts/gateway-models` with the catalog as values and publishes it to a Helm repository in MinIO (`GATEWAY_MODELS_BUCKET`, `registry/gatewaychart.py`), which Argo CD installs.
+- the gateway's model routes: once a policy commit is active, the publisher packages its `charts/gateway-models` with the catalog as values and publishes it to a Helm repository in MinIO (`GATEWAY_MODELS_BUCKET`, `registry/gatewaychart.py`), which Argo CD installs; after a new version the publisher asks Argo CD to refresh that one Application (`GATEWAY_MODELS_ARGO_APP`, `registry/argo.py`) rather than wait for its poll.
 - `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule, and `registry_output_last_success_timestamp_seconds{output}` / `..._last_failure_...` for each of the publisher's outputs (`data`, `policy`, `chart`, `keys`, `activation`, `agentregistry`; `registry/health.py`), so one that keeps failing alerts rather than only logging.
 
 `/export` returns every record (a signed-in user).

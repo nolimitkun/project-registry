@@ -31,6 +31,8 @@ from psycopg.types.json import Jsonb
 from . import activation, gatewaychart
 from . import keys as keysmod
 from .health import Health
+from .wakeup import Wakeup
+from . import argo
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .policy import PolicyWatch, Rejected, same_data
@@ -341,6 +343,8 @@ def main() -> None:
     charted = None
     keys_mount, keyed, keyed_at = env.get("GATEWAY_KEYS_MOUNT"), None, 0.0
     health = Health(db)
+    wake = Wakeup(env["DATABASE_URL"])
+    argo_app = env.get("GATEWAY_MODELS_ARGO_APP")       # "<namespace>/<name>": refresh it after a chart
 
     # Each output is one step per round (health.py): it finishes or raises, and a failure is
     # recorded, served on /metrics and retried, while the other outputs go on.
@@ -374,6 +378,8 @@ def main() -> None:
         if version:
             with db.tx() as c:
                 dbm.audit(c, "publisher", "publish", f"gateway-models@{version}", None, {"policy": active})
+            if argo_app:
+                argo.refresh(argo_app)
         charted = state
 
     def activate() -> None:
@@ -408,10 +414,15 @@ def main() -> None:
             health.run("keys", gateway_keys, retry_after=60)    # Vault down or no permission: once a minute
         health.run("activation", activate)
         if health.run("data", pub.publish_once):
+            # what follows from the new bundle goes out now, not after the batch interval
+            if charts:
+                health.run("chart", chart)
+            if keys_mount:
+                health.run("keys", gateway_keys, retry_after=60)
             sync()                                  # the agents may have changed
-            time.sleep(interval)
+            time.sleep(interval)                    # batches: OPA reloads at most this often
             continue
-        time.sleep(5)
+        wake.wait(5)                                # an approval ends the wait at once
 
 if __name__ == "__main__":
     main()
