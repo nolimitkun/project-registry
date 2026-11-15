@@ -25,7 +25,7 @@
       "type": "string"
     },
     "data_class": {
-      "description": "The most sensitive data the project sends. Caps the placements it may use (policies/gateway/data.json classes).",
+      "description": "The most sensitive data the project sends. Caps the placements it may use (the registry's data_classes setting).",
       "enum": [
         "restricted",
         "confidential",
