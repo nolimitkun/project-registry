@@ -17,6 +17,8 @@ package gateway.rankings
 
 import rego.v1
 
+import data.gateway.lib
+
 prometheus := "http://prometheus-server.mini-platform.svc.cluster.local/api/v1/query"
 
 window := "6h"
@@ -45,12 +47,28 @@ response := http.send({
 	"force_cache_duration_seconds": cache_seconds,
 })
 
-# model -> median request duration in milliseconds. Empty when Prometheus is
-# unreachable or answers anything but a vector.
-latency_ms := {m: round(to_number(v) * 1000) |
+# The metrics' model label -> median request duration in milliseconds. Empty
+# when Prometheus is unreachable or answers anything but a vector.
+measured := {label: round(to_number(v) * 1000) |
 	response.status_code == 200
 	some r in response.body.data.result
-	m := r.metric.gen_ai_request_model
+	label := r.metric.gen_ai_request_model
 	v := r.value[1]
 	not v in {"NaN", "+Inf", "-Inf"}
+}
+
+# The label is the model name the provider got: the catalog name, except for a
+# KServe model, whose route replaces it with the name vLLM serves (the catalog's
+# served_model). Mapped back here, or select.rego would never find the model.
+catalog_name(label) := name if {
+	some name, m in lib.catalog.models
+	m.served_model == label
+} else := label
+
+# catalog model -> median request duration in milliseconds. Two labels can name
+# one model (its catalog name from before it moved to KServe, and its served
+# name): the faster counts, so the object never gets two values for one key.
+latency_ms := {name: min({ms | some label, ms in measured; catalog_name(label) == name}) |
+	some label, _ in measured
+	name := catalog_name(label)
 }

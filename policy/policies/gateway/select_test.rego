@@ -18,6 +18,14 @@ prom_fast_deepseek(_) := prom_result({"deepseek-v4-pro": "0.05", "qwen3.6-27b": 
 
 prom_odd(_) := prom_result({"gemini-3.8-flash": "NaN", "qwen3.6-27b": "+Inf", "deepseek-v4-pro": "1.5"})
 
+# What the live gateway reports: a KServe model under the name vLLM serves.
+served_qwen := "unsloth/Qwen3.6-27B-NVFP4@ccdaab7e68af2409599b8949a8f2685703c9bae5"
+
+prom_served(_) := prom_result({"gemini-3.5-flash-lite": "0.48", "gemini-3.8-flash": "1.92", served_qwen: "0.48"})
+
+# Its catalog name (from before the route rewrote it) and its served name, both in the window.
+prom_both_names(_) := prom_result({"qwen3.6-27b": "0.9", served_qwen: "0.3"})
+
 prom_down(_) := {"status_code": 0, "error": {"code": "eval_http_send_network_error", "message": "connection refused"}}
 
 prom_500(_) := {"status_code": 500, "body": {"status": "error"}}
@@ -74,6 +82,24 @@ test_rankings_parse if {
 	# NaN and infinities (too few samples, empty buckets) are left unranked.
 	rankings.latency_ms == {"deepseek-v4-pro": 1500} with http.send as prom_odd
 	rankings.latency_ms == {} with http.send as prom_down
+}
+
+test_rankings_map_served_names_to_the_catalog if {
+	rankings.latency_ms == {"gemini-3.5-flash-lite": 480, "gemini-3.8-flash": 1920, "qwen3.6-27b": 480}
+		with http.send as prom_served
+
+	# two labels for one model: the faster counts
+	rankings.latency_ms == {"qwen3.6-27b": 300} with http.send as prom_both_names
+}
+
+test_fastest_ranks_a_kserve_model if {
+	# as fast as flash-lite and cheaper: Qwen, not left unranked behind the slower Gemini
+	select.result.model == "qwen3.6-27b" with input as {"project": "t"}
+		with data.projects.t as proj({"routing": "fastest"})
+		with http.send as prom_served
+	array.slice(select.by_speed, 0, 3) == ["qwen3.6-27b", "gemini-3.5-flash-lite", "gemini-3.8-flash"] with input as {"project": "t"}
+		with data.projects.t as proj({"routing": "fastest"})
+		with http.send as prom_served
 }
 
 test_rankings_query_targets_the_gateway if {
