@@ -52,9 +52,10 @@ def world(tmp_path, monkeypatch):
     store.activate("gateway-policy", policy_rev)
     signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "opa-bundles")
     renderer = render.Renderer(REPO, tmp_path / "checkouts")
-    # the catalog: a seed carries it, like the deployment's (the policy's test fixture)
+    # the catalog and the settings: a seed carries them, like the deployment's (the policy's
+    # test fixture)
     fixture = yaml.safe_load((renderer.checkout(policy_rev) / "fixtures" / "records.yaml").read_text())
-    for kind in dbm.CATALOG_KINDS:
+    for kind in dbm.CATALOG_KINDS + dbm.SETTING_KINDS:
         monkeypatch.setitem(SEED, kind, fixture.get(kind) or {})
     roles = {"value": ["project_owner"], "may_submit": True, "asked": []}
 
@@ -511,10 +512,9 @@ def test_a_setting_is_changed_by_request_into_the_data_bundle(world):
     importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
     roles["value"] = ["platform", "security"]
     with pytest.raises(HTTPException) as e:                                   # gen-settings.py validates it
-        reg.submit(ALICE, "setting", "autonomy", "create", api.ChangeIn(spec={"supervised": ["read", "fly"]}))
+        reg.submit(ALICE, "setting", "autonomy", "update", api.ChangeIn(spec={"supervised": ["read", "fly"]}))
     assert e.value.status_code == 422
-    spec = {"read-only": ["read"], "supervised": ["read", "write"], "autonomous": ["read", "write"]}
-    ch = reg.submit(ALICE, "setting", "autonomy", "create", api.ChangeIn(spec=spec))
+    ch = reg.submit(ALICE, "setting", "autonomy", "update", api.ChangeIn(spec={"supervised": ["read", "write"]}))
     reg.decide(BOB, ch["id"], "approve", None)
     reg.decide(SEC, ch["id"], "approve", None)
     data = pub.publish_once()
