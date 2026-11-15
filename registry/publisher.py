@@ -414,6 +414,11 @@ def main() -> None:
             health.run("keys", gateway_keys, retry_after=60)    # Vault down or no permission: once a minute
         health.run("activation", activate)
         if health.run("data", pub.publish_once):
+            # what follows from the new bundle goes out now, not after the batch interval
+            if charts:
+                health.run("chart", chart)
+            if keys_mount:
+                health.run("keys", gateway_keys, retry_after=60)
             sync()                                  # the agents may have changed
             time.sleep(interval)                    # batches: OPA reloads at most this often
             continue
