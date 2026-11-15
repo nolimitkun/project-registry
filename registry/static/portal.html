@@ -440,10 +440,10 @@ function changesTable(changes, withYours) {
 
 const PAGE = 50;
 async function viewChanges(params) {
-  const opts = { state: params.state ?? "open", kind: params.kind || "", q: params.q || "", page: Number(params.page) || 0 };
+  const opts = { state: params.state || "open", kind: params.kind || "", q: params.q || "", page: Number(params.page) || 0 };
   const goChanges = (o) => go(`changes?${new URLSearchParams(Object.entries({ ...opts, ...o }).filter(([k, v]) => v !== "" && !(k === "page" && !v)))}`);
   const state = el("select", { onchange: () => goChanges({ state: state.value, page: 0 }) },
-    [["open", "Open"], ["", "All"], ["pending_approval", "Pending approval"], ["active", "Active"], ["withdrawn", "Withdrawn"], ["rejected", "Rejected"],
+    [["open", "Open"], ["all", "All"], ["pending_approval", "Pending approval"], ["active", "Active"], ["withdrawn", "Withdrawn"], ["rejected", "Rejected"],
      ["approved", "Approved"], ["publishing", "Publishing"], ["failed", "Failed"], ["skipped", "Skipped"], ["rolled_back", "Rolled back"]]
       .map(([v, t]) => el("option", v === opts.state ? { value: v, selected: "" } : { value: v }, t)));
   const kind = el("select", { onchange: () => goChanges({ kind: kind.value, page: 0 }) },
@@ -452,7 +452,7 @@ async function viewChanges(params) {
   const q = el("input", { type: "search", placeholder: "object or author", value: opts.q });
   q.addEventListener("change", () => goChanges({ q: q.value.trim(), page: 0 }));
   const query = new URLSearchParams({ limit: PAGE + 1, offset: opts.page * PAGE });
-  for (const k of ["state", "kind", "q"]) if (opts[k]) query.set(k, opts[k]);
+  for (const k of ["state", "kind", "q"]) if (opts[k] && opts[k] !== "all") query.set(k, opts[k]);
   const found = await api("GET", `/changes?${query}`);
   const changes = found.slice(0, PAGE);
   const csv = csvButton("changes.csv", ["id", "kind", "object", "op", "state", "needs", "approved", "by", "created_at"],
