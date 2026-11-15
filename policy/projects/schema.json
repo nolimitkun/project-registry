@@ -63,7 +63,7 @@
       }
     },
     "routing": {
-      "description": "How model \"auto\" picks a model for this project, always among the models it may use. cheapest: lowest price in the catalog. fastest: lowest time to first token measured by the ranking job, cheapest first where none is known yet. semantic: the vLLM Semantic Router names the task class and catalog tasks give the order, cheapest as the fallback. fixed:<model>: always that model. Default: cheapest.",
+      "description": "How model \"auto\" picks a model for this project, always among the models it may use. cheapest: lowest price in the catalog. fastest: lowest median request duration over the last six hours, from the gateway's metrics in Prometheus (rankings.rego), then price; models with fewer than three requests in that window rank last, so without rankings it is cheapest. semantic: the vLLM Semantic Router names the task class and catalog tasks give the order, cheapest as the fallback. fixed:<model>: always that model. Default: cheapest.",
       "type": "string",
       "pattern": "^(cheapest|fastest|semantic|fixed:[a-z0-9.-]+)$"
     },
