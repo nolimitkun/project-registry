@@ -37,6 +37,12 @@ A key identifies a project and nothing more: its metadata is
 one generic Rego policy. Nobody writes Rego for a project, and adding a project
 or a model is a data change.
 
+**Phase 1, as built on 2026-11-10, superseded.** The chart shows how it was: OCP, the
+`projects/*.yaml` and `catalog/models.yaml` files and the generated rate-limit config and
+alert rules are gone. Today the project registry holds the records and publishes both
+bundles, the chart and the keys: see its
+[architecture](../../docs/design.md#architecture).
+
 ```mermaid
 flowchart LR
   subgraph git[Git: this repo]
@@ -283,11 +289,11 @@ the project sets no limit.
 
 | Change | Path | Delay |
 |--------|------|-------|
-| Project change | registry change approved → publisher (batches every 30 s, renders, replays, signs) → OPA poll (10–30 s) | under 1 min (measured: active everywhere 9 s after approval) |
-| Rego or chart change | merge → the registry files a policy change within a minute (opa test, build, sign, replay) → approval → publisher → OPA poll (10–30 s) | the approval, plus under 1 min |
-| Catalog change (a model, Google API, tool or setting) | registry change approved → publisher (renders, replays as a report, signs) → OPA poll | the approval, plus under 1 min |
-| New or revoked key | the key id added to or dropped from a project or agent in the registry → the publisher writes Vault's key maps → VSO refresh → gateway reload | the project change, plus the VSO interval (1 min) |
-| New model routes or `auto` models | with the catalog or chart change: the registry publishes a new `gateway-models` chart version to MinIO → Argo CD installs it | about 3 min (Argo CD's poll) |
+| Project change | registry change approved → NOTIFY wakes the publisher (renders, replays, signs; publishes at most every 30 s) → OPA poll (2–5 s) | about 6 s (measured) |
+| Rego or chart change | merge → the registry files a policy change within 15 s (opa test, build, sign, replay) → approval → publisher → OPA poll (2–5 s) | the approval, plus seconds |
+| Catalog change (a model, Google API, tool or setting) | registry change approved → publisher (renders, replays as a report, signs) → OPA poll | the approval, plus seconds |
+| New or revoked key | the key id added to or dropped from a project or agent in the registry → the publisher writes Vault's key maps right after the bundle → VSO refresh (15 s) → gateway reload | new key 6 s; revoked: OPA 403 after 1 s, gateway 401 after 3 s (measured) |
+| New model routes or `auto` models | with the catalog or chart change: the registry publishes a new `gateway-models` chart version to MinIO and asks Argo CD to refresh it → Argo CD installs it | about 2 s (measured) |
 | Limits and budgets | with the project data bundle: OPA returns them, the gateway sends them as `limitOverride` | as a project change; no restart |
 | Alert thresholds | merge → Argo CD sync of `prometheus` (config reload) | sync |
 | Rankings | Prometheus → OPA cache | ≤ 2 min |
