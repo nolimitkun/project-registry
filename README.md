@@ -82,7 +82,10 @@ Its runs record health as the output `usage`. `GET /usage` reports a date range 
 - agents, exceptions and the catalog (models with their prices and tasks, Google APIs, MCP tools by risk), read only;
 - status (`GET /status`): the published revision of each bundle against what every ready OPA pod reports it loaded, each publisher output's last success and failure, how far the usage ledger reaches, and the pending and firing `Gateway*` and `ProjectRegistry*` alerts from Prometheus (`PROMETHEUS_URL`);
 - proposing a change in two steps: Review asks `POST /changes/preview`, which checks it as a submit would and answers who must approve it and what changes field by field, without filing anything; Submit files what was reviewed;
-- change requests with their field-by-field diff, approvals and replay report; approve and reject only for the approvals that are the caller's, withdraw for its author and the platform team;
+- change requests with their field-by-field diff, approvals and replay report; approve and reject only for the approvals that are the caller's, withdraw for its author and the platform team. The list filters by state, kind and a part of the object id or author (`GET /changes?state=&kind=&q=&offset=`), 50 to a page;
+- why denied: whether the gateway would let a project, with its own key or a chosen one, call a model, an MCP tool or a Google API, or list the models (`POST /explain`). The registry evaluates `authz.rego`'s `allow` and `reason` on OPA with the input agentgateway would send, so the answer is the 403's reason under the policy loaded now, with what would change it. A refused request on the usage page links here;
+- the audit log (`GET /audit?actor=&action=&q=`), for the platform team, security and the cost owners: every change, decision, publication, rollback and key map write (key ids only);
+- CSV export of the usage tables, a day's requests, the changes and the audit log, built in the browser from what the page shows; search boxes over the projects and the usage page's agents and keys;
 - the published bundles of both kinds, with rollback for the platform team;
 - usage: spend per day, each project's last 30 days against its budget and its pace, models (and what `auto` chose), agents and keys, what on-prem models served (`USAGE_REFERENCE_MODEL` prices it), and a project's dearest requests of a day with their trace ids.
 
@@ -111,7 +114,7 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 | `registry/approvals.py` | who approves: `data.portal.required_approvals` on OPA |
 | `registry/activation.py` | when a published revision is active on every ready OPA pod |
 | `registry/gatewaychart.py` | the gateway-models chart, published as a Helm repository in MinIO |
-| `registry/insight.py` | what a project can use, asked of OPA, and the status page's reads |
+| `registry/insight.py` | what a project can use and why a call is refused, asked of OPA, and the status page's reads |
 | `registry/health.py` | each publisher output's last success and failure, for `/metrics` |
 | `registry/keys.py` | the gateway's API key maps in Vault, written from the records |
 | `registry/vault.py` | Vault: Kubernetes login, Transit signing, KV reads and writes |

@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import re
 
 import requests
 
@@ -134,3 +135,71 @@ def status(c, store, bundle_names: tuple[str, ...], pods: set[str] | None, usage
             ledger = {"error": f"{type(e).__name__}: {e}"}
     return {"published": published, "opa": opa, "outputs": outputs, "usage": ledger,
             "alerts": alerts(prometheus_url if prometheus_url is not None else os.environ.get("PROMETHEUS_URL"))}
+
+
+# Why the gateway would refuse a call: authz.rego evaluated on the input agentgateway
+# would send for it (the project and key it attaches after checking the key, the path and
+# the parsed body), with the policy and data OPA has loaded now.
+EXPLAIN = """
+allow := data.gateway.authz.allow
+reason := data.gateway.authz.reason
+"""
+KEYS = """
+keys := object.get(data.projects, [input.project, "keys"], [])
+agent_keys := object.get(data.projects, [input.project, "agent_keys"], {})
+"""
+KINDS = ("model", "tool", "google", "models")
+
+# What would change each kind of refusal, by authz.rego's reason.
+HINTS = [
+    (r"^unknown project$", "The project is not published: OPA has no record of it."),
+    (r"^key .* is not active", "Add the key id to the project's keys (or the agent's, for an agent's key)."),
+    (r"may not call model deployments directly$", "Only a project with deployments set (the onboarding pipeline) may, and never with an agent's key."),
+    (r"^model .* is not allowed for agent ", "Widen the agent's models patterns; it can never go past its project's."),
+    (r"^model .* is not allowed for project ", "The model's placement must be one the project's data class and placements allow, and match its models patterns; otherwise an exception, which security approves."),
+    (r"^tool .* needs a human approval", "The agent's autonomy does not let it call a tool of this risk without a human, and the gateway has no approval path yet: raise its autonomy, or leave the call to a person."),
+    (r"^tool .* is not allowed for agent ", "Add a pattern for it to the agent's MCP tools; it must match the project's too."),
+    (r"^tool .* is not allowed for project ", "Add a pattern for it to the project's MCP tools."),
+    (r"^agent .* may use no MCP tools", "Give the agent MCP tools patterns."),
+    (r"^project .* may use no MCP tools", "Give the project MCP tools patterns."),
+]
+
+
+def explain_input(project: str, key_id: str, kind: str, name: str | None) -> dict:
+    meta = {"metadataContext": {"filterMetadata": {"agentgateway": {"project": project, "key_id": key_id}}}}
+    if kind == "model":
+        path, body = "/v1/chat/completions", {"model": name}
+    elif kind == "tool":
+        path, body = "/mcp", {"method": "tools/call", "params": {"name": name}}
+    elif kind == "google":
+        path, body = f"/google/{name}/v1/x", {}
+    else:
+        path, body = "/v1/models", {}
+    return {"attributes": {**meta, "request": {"http": {"path": path}}}, "parsed_body": body}
+
+
+def query(opa_url: str, q: str, input_: dict) -> dict:
+    r = requests.post(f"{opa_url}/v1/query", timeout=5, json={"query": q, "input": input_})
+    r.raise_for_status()
+    rows = r.json().get("result") or []
+    if not rows:
+        raise RuntimeError("OPA answered nothing: is the policy bundle loaded?")
+    return rows[0]
+
+
+def hint(reason: str | None) -> str | None:
+    return next((text for pattern, text in HINTS if reason and re.search(pattern, reason)), None)
+
+
+def explain(opa_url: str, project: str, kind: str, name: str | None, key_id: str | None = None) -> dict:
+    """Whether the gateway would let this project (with this key, by default its own) make
+    this call now, and authz.rego's reason when it would not."""
+    k = query(opa_url, KEYS, {"project": project})
+    keys, agent_keys = list(k.get("keys") or []), dict(k.get("agent_keys") or {})
+    if key_id is None:      # the project's own key first: an agent's key is narrower
+        key_id = next((x for x in keys if x not in agent_keys), keys[0] if keys else project)
+    a = query(opa_url, EXPLAIN, explain_input(project, key_id, kind, name))
+    reason = None if a.get("allow") else a.get("reason")
+    return {"project": project, "key_id": key_id, "agent": agent_keys.get(key_id), "kind": kind, "name": name,
+            "allowed": bool(a.get("allow")), "reason": reason, "hint": hint(reason),
+            "keys": [{"id": x, "agent": agent_keys.get(x)} for x in keys]}

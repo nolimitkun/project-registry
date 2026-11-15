@@ -76,6 +76,8 @@
     <button data-view="changes">Changes</button>
     <button data-view="publications">Publications</button>
     <button data-view="usage">Usage</button>
+    <button data-view="explain">Why denied?</button>
+    <button data-view="audit" id="nav-audit">Audit</button>
     <button data-view="status">Status</button>
   </nav>
   <span class="spacer"></span>
@@ -212,7 +214,8 @@ let me = null;
 // Every view has an address (#/changes/82, #/projects/admin, #/usage?project=admin&days=7),
 // so a change can be sent to its approvers, and Back and reload work.
 const views = { inbox: viewInbox, projects: viewProjects, agents: viewAgents, exceptions: viewExceptions, catalog: viewCatalog,
-  settings: viewSettings, changes: viewChanges, publications: viewPublications, usage: viewUsage, status: viewStatus };
+  settings: viewSettings, changes: viewChanges, publications: viewPublications, usage: viewUsage, status: viewStatus,
+  explain: viewExplain, audit: viewAudit };
 function go(path) { const h = "#/" + path; if (location.hash === h) route(); else location.hash = h; }
 function route() {
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
@@ -221,7 +224,7 @@ function route() {
   show_nav(name);
   show(el("p", { class: "muted" }, "Loading…"));
   const params = Object.fromEntries(new URLSearchParams(query || ""));
-  const page = name === "projects" && id ? viewProject(id) : name === "changes" && id ? viewChange(Number(id)) : views[name](params);
+  const page = name === "projects" && id ? viewProject(id) : name === "changes" && id ? viewChange(Number(id)) : views[name](params || {});
   page.catch((e) => show(el("p", { class: "error" }, e.message)));
   refreshBadge();
 }
@@ -289,9 +292,9 @@ async function viewProjects() {
     el("td", {}, el("strong", {}, id)), el("td", {}, p.data_class), el("td", {}, (p.placement || []).map((x) => el("span", { class: "chip" }, x))),
     el("td", {}, p.limits && p.limits.requests_per_minute ? `${p.limits.requests_per_minute}/min` : "—"),
     el("td", {}, p.budget ? `$${p.budget.usd_per_30_days}` : "—"), el("td", { class: "muted" }, p.description || "")));
+  const list = el("table", {}, el("thead", {}, el("tr", {}, ["Project", "Data class", "Placement", "Requests", "Budget / 30 days", "Description"].map((h) => el("th", {}, h)))), el("tbody", {}, rows));
   show(
-    el("section", { class: "panel" }, el("h2", {}, "Projects"),
-      el("table", {}, el("thead", {}, el("tr", {}, ["Project", "Data class", "Placement", "Requests", "Budget / 30 days", "Description"].map((h) => el("th", {}, h)))), el("tbody", {}, rows))),
+    el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Projects"), el("span", { class: "spacer" }), filterInput(list)), list),
     newProjectPanel());
 }
 
@@ -433,12 +436,36 @@ function changesTable(changes, withYours) {
       withYours ? el("td", {}, (c.yours || []).map((r) => el("span", { class: "chip" }, r))) : null))));
 }
 
-async function viewChanges() {
-  const filter = el("select", { onchange: () => load() }, el("option", { value: "open" }, "Open"), el("option", { value: "" }, "All"));
-  const holder = el("div");
-  const load = async () => holder.replaceChildren(changesTable(await api("GET", `/changes?limit=100${filter.value ? "&state=" + filter.value : ""}`)));
-  show(el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Changes"), el("span", { class: "spacer" }), filter), holder));
-  await load();
+const PAGE = 50;
+async function viewChanges(params) {
+  const opts = { state: params.state ?? "open", kind: params.kind || "", q: params.q || "", page: Number(params.page) || 0 };
+  const goChanges = (o) => go(`changes?${new URLSearchParams(Object.entries({ ...opts, ...o }).filter(([k, v]) => v !== "" && !(k === "page" && !v)))}`);
+  const state = el("select", { onchange: () => goChanges({ state: state.value, page: 0 }) },
+    [["open", "Open"], ["", "All"], ["pending_approval", "Pending approval"], ["active", "Active"], ["withdrawn", "Withdrawn"], ["rejected", "Rejected"],
+     ["approved", "Approved"], ["publishing", "Publishing"], ["failed", "Failed"], ["skipped", "Skipped"], ["rolled_back", "Rolled back"]]
+      .map(([v, t]) => el("option", v === opts.state ? { value: v, selected: "" } : { value: v }, t)));
+  const kind = el("select", { onchange: () => goChanges({ kind: kind.value, page: 0 }) },
+    [["", "Every kind"], ...["project", "agent", "exception", "model", "google_api", "tool", "catalog", "setting", "policy"].map((k) => [k, k])]
+      .map(([v, t]) => el("option", v === opts.kind ? { value: v, selected: "" } : { value: v }, t)));
+  const q = el("input", { type: "search", placeholder: "object or author", value: opts.q });
+  q.addEventListener("change", () => goChanges({ q: q.value.trim(), page: 0 }));
+  const query = new URLSearchParams({ limit: PAGE + 1, offset: opts.page * PAGE });
+  for (const k of ["state", "kind", "q"]) if (opts[k]) query.set(k, opts[k]);
+  const found = await api("GET", `/changes?${query}`);
+  const changes = found.slice(0, PAGE);
+  const csv = csvButton("changes.csv", ["id", "kind", "object", "op", "state", "needs", "approved", "by", "created_at"],
+    () => changes.map((c) => [c.id, c.kind, c.object_id, c.op, c.state, c.required_approvals.join(" "),
+      c.approvals.filter((a) => a.decision === "approve").map((a) => `${a.role}:${a.approver}`).join(" "), c.created_by, c.created_at]));
+  show(el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Changes"), el("span", { class: "spacer" }), q, kind, state, csv),
+    changesTable(changes), pager(opts.page, found.length > PAGE, (page) => goChanges({ page }))));
+}
+
+function pager(page, more, to) {
+  if (!page && !more) return null;
+  return el("div", { class: "row", style: "margin-top:10px" },
+    page ? el("button", { class: "action", onclick: () => to(page - 1) }, "← Newer") : null,
+    el("span", { class: "muted" }, `Page ${page + 1}`),
+    more ? el("button", { class: "action", onclick: () => to(page + 1) }, "Older →") : null);
 }
 
 async function viewChange(cid) {
@@ -599,9 +626,18 @@ async function viewUsage(params) {
         " Spend is what the gateway charged, the amount budgets count; 30-day budget figures run up to today.")),
     tiles,
     el("section", { class: "panel" }, el("h2", {}, "Spend per day"), spendBars(r.by_day, r.start, r.end)),
-    el("section", { class: "panel" }, el("h2", {}, "Projects"), r.by_project.length ? projects : el("p", { class: "muted" }, "No requests in this range.")),
-    el("section", { class: "panel" }, el("h2", {}, "Models"), r.by_model.length ? models : el("p", { class: "muted" }, "No model calls."), onprem),
-    el("section", { class: "panel" }, el("h2", {}, "Agents and keys"), r.by_agent.length ? agents : el("p", { class: "muted" }, "None.")),
+    el("section", { class: "panel" }, panelHead("Projects", r.by_project.length && csvButton(`usage-projects-${r.start}-${r.end}.csv`,
+        ["project", "spend_usd", "budget_usd_30d", "spend_30d_usd", "forecast_30d_usd", "calls", "tokens", "denied_403", "limited_429"],
+        () => r.by_project.map((p) => [p.project, p.cost_usd, p.budget_usd_30d, p.cost_30d, p.forecast_30d, p.requests, p.tokens, p.denied, p.limited]))),
+      r.by_project.length ? projects : el("p", { class: "muted" }, "No requests in this range.")),
+    el("section", { class: "panel" }, panelHead("Models", r.by_model.length && csvButton(`usage-models-${r.start}-${r.end}.csv`,
+        ["model", "placement", "calls", "via_auto", "input_tokens", "output_tokens", "spend_usd"],
+        () => r.by_model.map((m) => [m.model, m.placement, m.requests, m.via_auto, m.input_tokens, m.output_tokens, m.cost_usd]))),
+      r.by_model.length ? models : el("p", { class: "muted" }, "No model calls."), onprem),
+    el("section", { class: "panel" }, panelHead("Agents and keys", r.by_agent.length && [filterInput(agents), csvButton(`usage-agents-${r.start}-${r.end}.csv`,
+        ["project", "agent", "key_id", "calls", "tokens", "spend_usd"],
+        () => r.by_agent.map((a) => [a.project, a.agent, a.key_id, a.requests, a.tokens, a.cost_usd]))]),
+      r.by_agent.length ? agents : el("p", { class: "muted" }, "None.")),
   ];
   if (opts.project) panels.push(requestsPanel(opts.project, r.end));
   show(...panels);
@@ -609,21 +645,29 @@ async function viewUsage(params) {
 
 function requestsPanel(project, day) {
   const date = el("input", { type: "date", value: day });
+  let dayRows = [];
   const holder = el("div", {}, el("p", { class: "muted" }, "Loading…"));
   const load = async () => {
     try {
       const rows = await api("GET", `/usage/requests?${new URLSearchParams({ project, date: date.value, limit: 50 })}`);
+      dayRows = rows;
       holder.replaceChildren(rows.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Time (UTC)"), el("th", {}, "Agent or key"), el("th", {}, "What"), el("th", {}, "Outcome"), numTh("Tokens in / out"), numTh("Spend"), numTh("Duration"), el("th", {}, "Trace id"))),
         el("tbody", {}, rows.map((q) => el("tr", {}, el("td", { class: "muted" }, String(q.ts).slice(11, 19)), el("td", {}, q.agent || q.key_id || ""),
           el("td", {}, q.kind === "model" ? [q.model || "", q.virtual_model ? el("span", { class: "chip" }, q.virtual_model) : null] : q.kind === "mcp" ? `MCP ${q.mcp_method || ""}${q.mcp_tool ? " " + q.mcp_tool : ""}` : q.kind),
-          el("td", { class: q.outcome === "ok" ? "" : "error" }, `${q.outcome} ${q.status ?? ""}`), numTd(`${count(q.input_tokens)} / ${count(q.output_tokens)}`), numTd(usd(q.cost_usd)),
+          el("td", { class: q.outcome === "ok" ? "" : "error" }, `${q.outcome} ${q.status ?? ""}`,
+            q.outcome === "denied" && (q.kind === "model" || q.kind === "mcp") ? [" ", el("a", { href: "#/explain?" + new URLSearchParams({ project,
+              ...(q.key_id ? { key: q.key_id } : {}), kind: q.kind === "mcp" ? "tool" : "model", name: (q.kind === "mcp" ? q.mcp_tool : q.model) || "" }) }, "why?")] : null), numTd(`${count(q.input_tokens)} / ${count(q.output_tokens)}`), numTd(usd(q.cost_usd)),
           numTd(q.duration_ms == null ? "" : `${Math.round(q.duration_ms)} ms`), el("td", { class: "muted" }, el("code", {}, q.trace_id || "")))))) : el("p", { class: "muted" }, "No requests that day."));
     } catch (e) { holder.replaceChildren(el("p", { class: "error" }, e.message)); }
   };
   date.addEventListener("change", load);
   load();
-  return el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Requests, the dearest first"), el("span", { class: "spacer" }), date),
-    el("p", { class: "muted" }, "Up to 50 of the day. The trace id finds the call in Tempo."), holder);
+  const csv = csvButton(`requests-${project}.csv`, ["ts", "agent", "key_id", "kind", "model", "virtual_model", "mcp_method", "mcp_tool", "outcome", "status",
+    "input_tokens", "output_tokens", "spend_usd", "duration_ms", "trace_id"],
+    () => dayRows.map((q) => [q.ts, q.agent, q.key_id, q.kind, q.model, q.virtual_model, q.mcp_method, q.mcp_tool, q.outcome, q.status,
+      q.input_tokens, q.output_tokens, q.cost_usd, q.duration_ms, q.trace_id]));
+  return el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Requests, the dearest first"), el("span", { class: "spacer" }), date, csv),
+    el("p", { class: "muted" }, "Up to 50 of the day. The trace id finds the call in Tempo; why? asks the policy as it is now."), holder);
 }
 
 // --- read-only views: what a project can use, agents, exceptions, the catalog, status ---
@@ -740,6 +784,98 @@ async function viewStatus() {
     el("section", { class: "panel" }, el("h2", {}, "Alerts"), alerts));
 }
 
+// --- why denied, the audit log, and the helpers for search and CSV ---
+function panelHead(title, ...extra) {
+  return el("div", { class: "row" }, el("h2", { style: "margin:0" }, title), el("span", { class: "spacer" }), extra.filter(Boolean));
+}
+
+// Hides the table's rows that don't contain the text.
+function filterInput(tableEl, placeholder = "filter") {
+  const i = el("input", { type: "search", placeholder });
+  i.addEventListener("input", () => {
+    const t = i.value.trim().toLowerCase();
+    for (const tr of tableEl.querySelectorAll("tbody tr")) tr.hidden = !!t && !tr.textContent.toLowerCase().includes(t);
+  });
+  return i;
+}
+
+// rows: a function, called on click, of arrays of plain values. A cell that a spreadsheet
+// would run as a formula (= + - @ first) is quoted as text.
+function csvButton(name, heads, rows) {
+  const cell = (v) => {
+    v = v === null || v === undefined ? "" : String(v);
+    if (/^[=+\-@\t\r]/.test(v)) v = "'" + v;
+    return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  };
+  return el("button", { class: "action", onclick: () => {
+    const text = [heads, ...rows()].map((r) => r.map(cell).join(",")).join("\r\n") + "\r\n";
+    const a = el("a", { href: URL.createObjectURL(new Blob([text], { type: "text/csv" })), download: name });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } }, "CSV");
+}
+
+async function viewExplain(params) {
+  const [projects, models, tools, apis] = await Promise.all([api("GET", "/projects"), api("GET", "/models"), api("GET", "/tools"), api("GET", "/google-apis")]);
+  const names = { model: Object.keys(models), tool: Object.keys(tools), google: Object.keys(apis), models: [] };
+  const project = el("select", {}, Object.keys(projects).map((p) => el("option", p === params.project ? { value: p, selected: "" } : { value: p }, p)));
+  const kind = el("select", {}, [["model", "a model call"], ["tool", "an MCP tool call"], ["google", "a Google API"], ["models", "listing the models"]]
+    .map(([v, t]) => el("option", v === (params.kind || "model") ? { value: v, selected: "" } : { value: v }, t)));
+  const list = el("datalist", { id: "explain-names" });
+  const name = el("input", { type: "text", list: "explain-names", placeholder: "model, tool or API", value: params.name || "", size: 36 });
+  const key = el("select", {}, el("option", { value: "" }, "its own key"));
+  if (params.key) key.append(el("option", { value: params.key, selected: "" }, params.key));
+  const out = el("div");
+  const fillNames = () => { list.replaceChildren(...names[kind.value].map((n) => el("option", { value: n }))); name.disabled = kind.value === "models"; };
+  kind.addEventListener("change", () => { name.value = ""; fillNames(); });
+  project.addEventListener("change", () => { key.replaceChildren(el("option", { value: "" }, "its own key")); });
+  fillNames();
+  const ask = async () => {
+    out.replaceChildren(el("p", { class: "muted" }, "Asking OPA…"));
+    try {
+      const r = await api("POST", "/explain", { project: project.value, kind: kind.value, name: name.value.trim() || null, key_id: key.value || null });
+      const chosen = key.value;
+      key.replaceChildren(el("option", { value: "" }, "its own key"), ...r.keys.map((k) => el("option", k.id === chosen ? { value: k.id, selected: "" } : { value: k.id },
+        k.agent ? `${k.id} (agent ${k.agent})` : k.id)));
+      history.replaceState(null, "", "#/explain?" + new URLSearchParams({ project: r.project, kind: r.kind, ...(r.name ? { name: r.name } : {}), ...(chosen ? { key: chosen } : {}) }));
+      out.replaceChildren(el("div", { class: "review" },
+        el("p", {}, el("strong", { class: r.allowed ? "state-active" : "error" }, r.allowed ? "Allowed" : "Refused"),
+          ` for project ${r.project} with key ${r.key_id}`, r.agent ? ` (agent ${r.agent})` : "", "."),
+        r.reason ? el("p", {}, "Policy's reason: ", el("code", {}, r.reason)) : null,
+        r.hint ? el("p", {}, "What would change it: ", r.hint) : null,
+        el("p", {}, el("a", { href: `#/projects/${encodeURIComponent(r.project)}` }, `What ${r.project} can use, and its form`))));
+    } catch (e) { out.replaceChildren(el("p", { class: "error" }, e.message)); }
+  };
+  show(el("section", { class: "panel" }, el("h2", {}, "Why denied?"),
+    el("p", { class: "muted" }, "Asks the gateway's OPA whether it would let a project make a call, with the policy and data it has loaded now, and if not, why. The gateway sends the same reason in its 403."),
+    el("div", { class: "row" }, "Project ", project, " key ", key, " making ", kind, name, list,
+      el("button", { class: "action primary", onclick: ask }, "Explain")), out));
+  if (params.project) await ask();
+}
+
+async function viewAudit(params) {
+  const opts = { actor: params.actor || "", action: params.action || "", q: params.q || "", page: Number(params.page) || 0 };
+  const goAudit = (o) => go(`audit?${new URLSearchParams(Object.entries({ ...opts, ...o }).filter(([k, v]) => v !== "" && !(k === "page" && !v)))}`);
+  const field = (k, ph) => { const i = el("input", { type: "search", placeholder: ph, value: opts[k], size: 18 }); i.addEventListener("change", () => goAudit({ [k]: i.value.trim(), page: 0 })); return i; };
+  const query = new URLSearchParams({ limit: PAGE + 1, offset: opts.page * PAGE });
+  for (const k of ["actor", "action", "q"]) if (opts[k]) query.set(k, opts[k]);
+  const found = await api("GET", `/audit?${query}`);
+  const rows = found.slice(0, PAGE);
+  const details = (e) => e.before || e.after ? el("details", {}, el("summary", { class: "muted" }, "details"),
+    el("div", { class: "grid2" }, el("pre", {}, json(e.before)), el("pre", {}, json(e.after)))) : null;
+  const objectLink = (o) => { const m = /^change\/(\d+)$/.exec(o) || /^\w+\/(.+)$/.exec(o); return o.startsWith("change/") && m
+    ? el("a", { href: `#/changes/${m[1]}` }, o) : o.startsWith("project/") ? el("a", { href: `#/projects/${encodeURIComponent(o.slice(8))}` }, o) : el("code", {}, o); };
+  const csv = csvButton("audit.csv", ["seq", "at", "actor", "action", "object", "before", "after"],
+    () => rows.map((e) => [e.seq, e.at, e.actor, e.action, e.object, e.before ? JSON.stringify(e.before) : "", e.after ? JSON.stringify(e.after) : ""]));
+  show(el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Audit log"), el("span", { class: "spacer" }),
+      field("actor", "actor (exact)"), field("action", "action (exact)"), field("q", "object contains"), csv),
+    el("p", { class: "muted" }, "Every change, decision, publication, rollback and key map write, newest first."),
+    rows.length ? table(["#", "When", "Actor", "Action", "Object", ""], rows.map((e) => el("tr", {},
+      el("td", { class: "muted" }, e.seq), el("td", {}, when(e.at)), el("td", {}, e.actor), el("td", {}, el("span", { class: "chip" }, e.action)),
+      el("td", {}, objectLink(e.object)), el("td", {}, details(e))))) : el("p", { class: "muted" }, "Nothing matches."),
+    pager(opts.page, found.length > PAGE, (page) => goAudit({ page }))));
+}
+
 function show_nav(view) { for (const b of document.querySelectorAll("nav button")) b.classList.toggle("active", b.dataset.view === view); }
 
 // --- start ---
@@ -755,6 +891,8 @@ function show_nav(view) { for (const b of document.querySelectorAll("nav button"
     me = await api("GET", "/me");
     document.getElementById("who").textContent = `${me.name} · ${me.groups.join(", ")}`;
     document.getElementById("nav").hidden = false;
+    // the audit log is for the approver groups (GET /audit answers 403 to anyone else)
+    document.getElementById("nav-audit").hidden = !["platform-admins", "security-reviewers", "cost-owners"].some((g) => me.groups.includes(g));
     const out = document.getElementById("logout"); out.hidden = false; out.onclick = logout;
     for (const b of document.querySelectorAll("nav button")) b.onclick = () => go(b.dataset.view);
     window.addEventListener("hashchange", route);
