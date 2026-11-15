@@ -59,7 +59,7 @@ None of these is a backup of the database (approvals, audit log).
 - `/internal/bundles/<bundle>`: the active bundle, for `scripts/policy-replay.py`.
 - agentregistry's catalog of registered agents: the publisher applies it after each publish and every hour (`AGENTREGISTRY_URL`).
 - the gateway's model routes: once a policy commit is active, the publisher packages its `charts/gateway-models` with the catalog as values and publishes it to a Helm repository in MinIO (`GATEWAY_MODELS_BUCKET`, `registry/gatewaychart.py`), which Argo CD installs; after a new version the publisher asks Argo CD to refresh that one Application (`GATEWAY_MODELS_ARGO_APP`, `registry/argo.py`) rather than wait for its poll.
-- `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule, and `registry_output_last_success_timestamp_seconds{output}` / `..._last_failure_...` for each of the publisher's outputs (`data`, `policy`, `chart`, `keys`, `activation`, `agentregistry`; `registry/health.py`), so one that keeps failing alerts rather than only logging.
+- `/metrics`: `project_budget_usd{project}`, for the platform's one budget alert rule; `model_price_usd_per_million_tokens{model, gen_ai_request_model, gen_ai_token_type}`, each catalog price labelled like the gateway's token metrics (a KServe model under its served name), for the price drift alert (budgets charge agentgateway's own price table); and `registry_output_last_success_timestamp_seconds{output}` / `..._last_failure_...` for each of the publisher's outputs (`data`, `policy`, `chart`, `keys`, `activation`, `agentregistry`; `registry/health.py`), so one that keeps failing alerts rather than only logging.
 
 `/export` returns every record (a signed-in user).
 

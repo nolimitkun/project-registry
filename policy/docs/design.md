@@ -391,7 +391,8 @@ build.** Bundle roots follow the layout: a top-level `data.json` makes the roots
 
 - **Routing for kagent and Holmes.** They are on `cheapest`. `semantic` or
   `fastest` sends their `auto` traffic to paid models, now capped by their
-  budgets. Every project has limits and a budget (`docs/agentgateway.md`).
+  budgets. Every project but `model-onboarding` (on-prem models only) has a
+  request limit and a budget (`docs/agentgateway.md`).
 - **Vertex quota.** Gemini 4 Argon and 3.8 Flash return 429
   `RESOURCE_EXHAUSTED` under light load, which needs a quota check for
   `mini-cloud-499820` in `eu`.
