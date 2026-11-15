@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
-from . import activation, approvals, health
+from . import activation, approvals, health, wakeup
 from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
 from . import bundles
@@ -185,6 +185,7 @@ class Registry:
             else:
                 state = "approved"
                 c.execute("insert into outbox (change_id) values (%s)", (change_id,))
+                wakeup.notify(c)                            # the publisher starts once this commits
             c.execute("update change_request set state = %s, updated_at = now() where id = %s", (state, change_id))
             dbm.audit(c, user.name, decision, f"change/{change_id}", None, {"role": role, "comment": comment})
             return {"id": change_id, "state": state, "approved_as": role}

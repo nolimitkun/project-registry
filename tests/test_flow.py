@@ -534,3 +534,41 @@ def test_a_setting_is_changed_by_request_into_the_data_bundle(world):
 def test_a_setting_change_may_change_any_project():
     from registry.publisher import Everyone, projects_touched
     assert isinstance(projects_touched({"kind": "setting", "object_id": "approvals", "before": {}, "after": {}}), Everyone)
+
+
+def test_an_approval_wakes_the_publisher(world):
+    import threading
+    import time as t
+    from registry.wakeup import Wakeup
+    db, store, reg, roles = world["db"], world["store"], world["reg"], world["roles"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    wake = Wakeup(DSN)
+    assert wake.wait(0.2) is False                                            # nothing yet
+    ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 30}}))
+    started = t.time()
+    threading.Timer(0.5, lambda: reg.decide(BOB, ch["id"], "approve", None)).start()
+    assert wake.wait(10) is True and t.time() - started < 5                   # not the whole timeout
+    assert wake.wait(0.2) is False                                            # one notice, one wake
+
+
+def test_a_chart_asks_argo_cd_to_refresh_its_application(tmp_path, monkeypatch):
+    from registry import argo
+    (tmp_path / "token").write_text("t0ken")
+    (tmp_path / "ca.crt").write_text("ca")
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(argo.requests, "patch", lambda url, **k: calls.append((url, k)) or Resp())
+    assert argo.refresh("argocd/mini-platform-gateway-models", sa=tmp_path) is True
+    url, k = calls[0]
+    assert url.endswith("/namespaces/argocd/applications/mini-platform-gateway-models")
+    assert k["json"] == {"metadata": {"annotations": {"argocd.argoproj.io/refresh": "normal"}}}
+    assert k["headers"]["Content-Type"] == "application/merge-patch+json"
+
+    def refused(url, **k):
+        raise argo.requests.ConnectionError("no route")
+    monkeypatch.setattr(argo.requests, "patch", refused)
+    assert argo.refresh("argocd/x", sa=tmp_path) is False                     # never raises
