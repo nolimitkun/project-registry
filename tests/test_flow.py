@@ -620,3 +620,41 @@ def test_the_usage_page_shows_each_caller_the_projects_it_may_see(world):
     app.dependency_overrides[api.current_user] = lambda: User("nobody", {"someone-else"})
     assert client.get("/usage", params=day).json()["by_project"] == []
     assert client.get("/usage", params={"start": "2026-11-15", "end": "2026-11-01"}).status_code == 422
+
+
+def test_the_inbox_lists_what_waits_for_the_caller_and_preview_files_nothing(world):
+    from fastapi.testclient import TestClient
+    db, reg, roles = world["db"], world["reg"], world["roles"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    app = api.create_app(reg)
+    client = TestClient(app)
+    as_ = lambda u: app.dependency_overrides.__setitem__(api.current_user, lambda: u)  # noqa: E731
+
+    # preview: who would approve, validated like a submit, nothing filed
+    roles["value"] = ["cost_owner", "project_owner"]
+    as_(ALICE)
+    p = client.post("/changes/preview", json={"collection": "projects", "object_id": "admin",
+                                              "spec": {"limits": {"requests_per_minute": 120}}}).json()
+    assert p["required_approvals"] == ["cost_owner", "project_owner"] and p["after"]["limits"]["requests_per_minute"] == 120
+    assert p["owner_group"] == "platform-admins" and client.get("/changes").json() == []
+    bad = client.post("/changes/preview", json={"collection": "projects", "object_id": "admin",
+                                                "spec": {"limits": {"requests_per_minute": 0}}})
+    assert bad.status_code == 422 and bad.json()["detail"]["errors"]                    # what gen-projects.py says
+    assert client.post("/changes/preview", json={"collection": "nope", "object_id": "x"}).status_code == 404
+
+    # filed: it waits for the cost owners and the project's owners, not for its author
+    ch = client.patch("/projects/admin", json={"spec": {"limits": {"requests_per_minute": 120}}}).json()
+    assert client.get("/changes", params={"awaiting": "me"}).json() == []               # ALICE wrote it
+    assert client.get(f"/changes/{ch['id']}").json()["yours"] == []
+    as_(COST)
+    [mine] = client.get("/changes", params={"awaiting": "me"}).json()
+    assert mine["id"] == ch["id"] and mine["yours"] == ["cost_owner"]
+    as_(BOB)                                                                            # platform-admins own admin
+    assert client.get("/changes", params={"awaiting": "me"}).json()[0]["yours"] == ["project_owner"]
+    assert client.post(f"/changes/{ch['id']}/approve", json={}).status_code == 200
+    assert client.get("/changes", params={"awaiting": "me"}).json() == []               # decided
+    as_(SEC)
+    assert client.get("/changes", params={"awaiting": "me"}).json() == []               # no role in it
+    as_(COST)
+    assert [c["id"] for c in client.get("/changes", params={"awaiting": "me"}).json()] == [ch["id"]]
+    assert client.get("/changes", params={"awaiting": "you"}).status_code == 422

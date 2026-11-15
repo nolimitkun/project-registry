@@ -75,11 +75,12 @@ An MCP tool is named as the catalog and the policy do: the gateway logs `tools/c
 
 Its runs record health as the output `usage`. `GET /usage` reports a date range from the daily files and `GET /usage/requests` a project's requests of one day from the facts, both for the projects the caller may see: every one for the platform team and the cost owners, otherwise those of the caller's owner groups. The API caches the files locally and queries them in process with DuckDB. Parquet travels through boto3, not DuckDB's S3 extension, which it would download at run time.
 
-**Portal.** The registry serves a page at `/portal/` (one HTML file, `registry/static/portal.html`, same origin as the API) with these views:
+**Portal.** The registry serves a page at `/portal/` (one HTML file, `registry/static/portal.html`, same origin as the API) with these views, each at its own address (`#/changes/82`, `#/projects/admin`, `#/usage?project=admin&days=7`) so a change can be sent to its approvers; a login returns to the address it started from:
 
-- projects, and their changes;
-- proposing a change (a JSON merge patch) or a new project;
-- change requests with their diff, approvals and replay report, and approve, reject and withdraw;
+- waiting for me, the start page: the changes with an open approval the caller may give (`GET /changes?awaiting=me`; every change carries `yours`, the approvals the caller may give now), with a count in the menu;
+- projects: each one's facts, a form for its fields (owner, data class, placement, model for `auto`, models, MCP tools, limits, budget, keys), or a JSON merge patch, and its changes;
+- proposing a change in two steps: Review asks `POST /changes/preview`, which checks it as a submit would and answers who must approve it and what changes field by field, without filing anything; Submit files what was reviewed;
+- change requests with their field-by-field diff, approvals and replay report; approve and reject only for the approvals that are the caller's, withdraw for its author and the platform team;
 - the published bundles of both kinds, with rollback for the platform team;
 - usage: spend per day, each project's last 30 days against its budget and its pace, models (and what `auto` chose), agents and keys, what on-prem models served (`USAGE_REFERENCE_MODEL` prices it), and a project's dearest requests of a day with their trace ids.
 

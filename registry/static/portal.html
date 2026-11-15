@@ -42,6 +42,13 @@
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
   .login { text-align: center; padding: 60px 16px; }
+  .badge { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--warn); color: var(--panel); font-size: 11px; font-weight: 600; text-align: center; }
+  .form { display: grid; grid-template-columns: 200px 1fr; gap: 10px 14px; align-items: start; }
+  .form label { color: var(--muted); padding-top: 6px; } .form .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .form textarea { min-height: 60px; } .form input[type=number] { width: 140px; }
+  @media (max-width: 700px) { .form { grid-template-columns: 1fr; } .form label { padding-top: 0; } }
+  .review { border-left: 3px solid var(--accent); padding: 8px 12px; margin: 10px 0; background: var(--bg); }
+  dl.facts { display: grid; grid-template-columns: 200px 1fr; gap: 6px 14px; margin: 0; } dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
   .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
   .tile .label { color: var(--muted); font-size: 12px; } .tile .value { font-size: 22px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
@@ -56,6 +63,7 @@
 <header>
   <h1>Project registry</h1>
   <nav id="nav" hidden>
+    <button data-view="inbox">Waiting for me <span id="badge" class="badge" hidden></span></button>
     <button data-view="projects">Projects</button>
     <button data-view="settings">Settings</button>
     <button data-view="changes">Changes</button>
@@ -98,7 +106,7 @@ const redirectUri = () => location.origin + "/portal/";
 async function login() {
   const { verifier, challenge } = await pkce();
   const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
-  store.setItem("pkce", JSON.stringify({ verifier, state }));
+  store.setItem("pkce", JSON.stringify({ verifier, state, route: location.hash }));
   const q = new URLSearchParams({ client_id: config.clientId, response_type: "code", scope: "openid",
     redirect_uri: redirectUri(), code_challenge: challenge, code_challenge_method: "S256", state });
   location.assign(`${config.issuer}/protocol/openid-connect/auth?${q}`);
@@ -115,7 +123,7 @@ async function finishLogin() {
   const q = new URLSearchParams(location.search);
   if (!q.has("code")) return;
   const saved = JSON.parse(store.getItem("pkce") || "{}");
-  history.replaceState(null, "", "/portal/");
+  history.replaceState(null, "", "/portal/" + (saved.route || ""));   // back where the login started
   if (q.get("state") !== saved.state) throw new Error("login state does not match");
   store.removeItem("pkce");
   await tokenRequest({ grant_type: "authorization_code", code: q.get("code"), redirect_uri: redirectUri(), code_verifier: saved.verifier });
@@ -153,16 +161,82 @@ function describe(detail) {
 
 // --- views ---
 let me = null;
-const views = { projects: viewProjects, settings: viewSettings, changes: viewChanges, publications: viewPublications, usage: viewUsage };
-function show(view, arg) {
-  for (const b of document.querySelectorAll("nav button")) b.classList.toggle("active", b.dataset.view === view);
+// Every view has an address (#/changes/82, #/projects/admin, #/usage?project=admin&days=7),
+// so a change can be sent to its approvers, and Back and reload work.
+const views = { inbox: viewInbox, projects: viewProjects, settings: viewSettings, changes: viewChanges, publications: viewPublications, usage: viewUsage };
+function go(path) { const h = "#/" + path; if (location.hash === h) route(); else location.hash = h; }
+function route() {
+  const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
+  const [view, id] = path.split("/").map(decodeURIComponent);
+  const name = views[view] ? view : "inbox";
+  show_nav(name);
   $main.replaceChildren(el("p", { class: "muted" }, "Loading…"));
-  views[view](arg).catch((e) => $main.replaceChildren(el("p", { class: "error" }, e.message)));
+  const params = Object.fromEntries(new URLSearchParams(query || ""));
+  const page = name === "projects" && id ? viewProject(id) : name === "changes" && id ? viewChange(Number(id)) : views[name](params);
+  page.catch((e) => $main.replaceChildren(el("p", { class: "error" }, e.message)));
+  refreshBadge();
+}
+async function refreshBadge() {
+  try {
+    const n = (await api("GET", "/changes?awaiting=me")).length;
+    const b = document.getElementById("badge"); b.textContent = n; b.hidden = !n;
+  } catch { /* the badge is a hint; the inbox itself says what failed */ }
+}
+
+async function viewInbox() {
+  const changes = await api("GET", "/changes?awaiting=me");
+  $main.replaceChildren(el("section", { class: "panel" }, el("h2", {}, "Waiting for me"),
+    el("p", { class: "muted" }, "Changes with an open approval you may give: not your own, not yet decided by you."),
+    changes.length ? changesTable(changes, true) : el("p", {}, "Nothing waits for you.")));
+}
+
+// Propose a change in two steps: Review asks the registry what submitting would file (validated
+// as a submit is, and who must approve it), then Submit files exactly what was reviewed. body()
+// builds the request; an edit in `watch` after a review asks for a new one.
+function proposal(collection, id, op, body, label, watch) {
+  const out = el("div");
+  const submitBtn = el("button", { class: "action primary", disabled: "" }, "Submit change");
+  let reviewed = null;
+  const stale = () => { if (reviewed) { reviewed = null; submitBtn.setAttribute("disabled", ""); out.replaceChildren(el("p", { class: "muted" }, "Edited since the review: review again.")); } };
+  for (const ev of ["input", "change"]) (watch || []).forEach((w) => w.addEventListener(ev, stale));
+  const review = async () => {
+    submitBtn.setAttribute("disabled", ""); reviewed = null;
+    let b;
+    try { b = body(); } catch (e) { out.replaceChildren(el("p", { class: "error" }, e.message)); return; }
+    out.replaceChildren(el("p", { class: "muted" }, "Checking…"));
+    try {
+      const p = await api("POST", "/changes/preview", { collection, object_id: id, op, ...b });
+      const diff = changedPaths(p.before, p.after);
+      out.replaceChildren(el("div", { class: "review" },
+        el("p", {}, "Needs approval from: ", p.required_approvals.map((r) => el("span", { class: "chip" }, r)), " (never from you)."),
+        diff.length ? el("table", {}, el("tbody", {}, diff.map(([k, a, z]) => el("tr", {}, el("td", {}, el("code", {}, k)), el("td", { class: "muted" }, a), el("td", {}, "→ ", z)))))
+                    : el("p", { class: "muted" }, "The whole record is created or removed.")));
+      reviewed = b; submitBtn.removeAttribute("disabled");
+    } catch (e) { out.replaceChildren(el("p", { class: "error" }, e.message)); }
+  };
+  submitBtn.addEventListener("click", async () => {
+    if (!reviewed) return;
+    try {
+      const path = `/${collection}/${encodeURIComponent(id)}`;
+      const ch = op === "create" ? await api("POST", path, reviewed) : op === "delete" ? await api("DELETE", path) : await api("PATCH", path, reviewed);
+      go(`changes/${ch.id}`);
+    } catch (e) { out.replaceChildren(el("p", { class: "error" }, e.message)); }
+  });
+  return el("div", {}, el("div", { class: "row" }, el("button", { class: "action", onclick: review }, label || "Review change"), submitBtn), out);
+}
+// Field paths that differ, with the value before and after ("—" for absent).
+function changedPaths(a, z, prefix = "") {
+  const show = (v) => v === undefined || v === null ? "—" : typeof v === "object" && !Array.isArray(v) ? json(v) : Array.isArray(v) ? v.join(", ") : String(v);
+  const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+  if (isObj(a) && isObj(z)) {
+    return [...new Set([...Object.keys(a), ...Object.keys(z)])].sort().flatMap((k) => changedPaths(a[k], z[k], prefix ? `${prefix}.${k}` : k));
+  }
+  return json(a ?? null) === json(z ?? null) ? [] : [[prefix || "(record)", show(a), show(z)]];
 }
 
 async function viewProjects() {
   const projects = await api("GET", "/projects");
-  const rows = Object.entries(projects).map(([id, p]) => el("tr", { class: "clickable", onclick: () => viewProject(id) },
+  const rows = Object.entries(projects).map(([id, p]) => el("tr", { class: "clickable", onclick: () => go(`projects/${encodeURIComponent(id)}`) },
     el("td", {}, el("strong", {}, id)), el("td", {}, p.data_class), el("td", {}, (p.placement || []).map((x) => el("span", { class: "chip" }, x))),
     el("td", {}, p.limits && p.limits.requests_per_minute ? `${p.limits.requests_per_minute}/min` : "—"),
     el("td", {}, p.budget ? `$${p.budget.usd_per_30_days}` : "—"), el("td", { class: "muted" }, p.description || "")));
@@ -173,24 +247,90 @@ async function viewProjects() {
 }
 
 async function viewProject(id) {
-  show_nav("projects");
-  const [record, changes] = await Promise.all([api("GET", `/projects/${encodeURIComponent(id)}`),
-                                               api("GET", `/changes?object_id=${encodeURIComponent(id)}&limit=20`)]);
-  const patch = el("textarea", {}, json({ limits: record.spec.limits || {}, budget: record.spec.budget || null }));
-  const msg = el("p");
-  const submit = async () => {
-    msg.className = ""; msg.textContent = "Submitting…";
-    try {
-      const ch = await api("PATCH", `/projects/${encodeURIComponent(id)}`, { spec: JSON.parse(patch.value) });
-      msg.className = "success"; msg.textContent = `Change ${ch.id} submitted; it needs: ${ch.required_approvals.join(", ")}.`;
-    } catch (e) { msg.className = "error"; msg.textContent = e.message; }
-  };
+  const [record, changes, settings, models] = await Promise.all([api("GET", `/projects/${encodeURIComponent(id)}`),
+    api("GET", `/changes?object_id=${encodeURIComponent(id)}&limit=20`), api("GET", "/settings"), api("GET", "/models")]);
+  const p = record.spec;
+  const classes = settings.data_classes || {};
+  const fmt = (v) => v === undefined || v === null || (Array.isArray(v) && !v.length) ? el("span", { class: "muted" }, "—") : Array.isArray(v) ? v.map((x) => el("span", { class: "chip" }, x)) : String(v);
+  const facts = el("dl", { class: "facts" }, [
+    ["Owner", p.owner], ["Data class", p.data_class], ["Placement", p.placement || (classes[p.data_class] ? [...classes[p.data_class], "(all its class allows)"] : null)],
+    ["Models", (p.models || {}).allow || ["*"]], ["Model for auto", p.routing || "cheapest"], ["MCP tools", p.mcp_tools],
+    ["Requests per minute", (p.limits || {}).requests_per_minute ?? "no limit"], ["Tokens per minute", (p.limits || {}).tokens_per_minute ?? "no limit"],
+    ["Budget per 30 days", p.budget ? `$${p.budget.usd_per_30_days}` : "no cap"], ["Keys", p.keys], ["Calls deployments directly", p.deployments ? "yes" : "no"],
+  ].flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, fmt(v))]));
+  const open = changes.find((c) => ["pending_approval", "approved", "publishing"].includes(c.state));
   $main.replaceChildren(
-    el("section", { class: "panel" }, el("h2", {}, `Project ${id}`), el("p", { class: "muted" }, `Record revision ${record.revision}`), el("pre", {}, json(record.spec))),
+    el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, `Project ${id}`), el("span", { class: "spacer" }),
+      el("a", { href: `#/usage?project=${encodeURIComponent(id)}` }, "Usage")),
+      el("p", { class: "muted" }, p.description || "", ` Record revision ${record.revision}.`), facts),
     el("section", { class: "panel" }, el("h2", {}, "Propose a change"),
-      el("p", { class: "muted" }, "A JSON merge patch over the record: set a field to change it, null to remove it. Nothing changes until it is approved and published."),
-      patch, el("div", { class: "row" }, el("button", { class: "action primary", onclick: submit }, "Submit change")), msg),
+      open ? el("p", { class: "error" }, "Change ", el("a", { href: `#/changes/${open.id}` }, `#${open.id}`), ` for this project is ${open.state}: a new one can be filed once it is done.`) : null,
+      projectForm(id, p, classes, Object.keys(models).sort())),
     el("section", { class: "panel" }, el("h2", {}, "Changes to this project"), changesTable(changes)));
+}
+
+// The project's fields as a form; Review sends only what changed, as a JSON merge patch.
+function projectForm(id, p, classes, modelNames) {
+  const lines = (v) => (v || []).join("\n");
+  const list = (t) => t.value.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
+  const num = (t, what) => { if (t.value.trim() === "") return null; const n = Number(t.value); if (!Number.isInteger(n) || n < 1) throw new Error(`${what}: a whole number of at least 1, or empty for none`); return n; };
+  const f = {
+    owner: el("input", { type: "text", value: p.owner || "", size: 40 }),
+    description: el("input", { type: "text", value: p.description || "", size: 60 }),
+    data_class: el("select", {}, ["restricted", "confidential", "internal", "public"].map((c) => el("option", c === p.data_class ? { value: c, selected: "" } : { value: c }, c + (classes[c] ? ` (${classes[c].join(", ")})` : "")))),
+    placement: ["onprem", "gcp", "external"].map((x) => el("label", { style: "margin-right:12px" }, el("input", (p.placement || []).includes(x) ? { type: "checkbox", value: x, checked: "" } : { type: "checkbox", value: x }), " ", x)),
+    routing: el("select", {}, ["cheapest", "fastest", "semantic", "fixed"].map((r) => el("option", ((p.routing || "cheapest").split(":")[0] === r) ? { value: r, selected: "" } : { value: r }, r))),
+    fixed: el("select", {}, modelNames.map((m) => el("option", (p.routing || "") === `fixed:${m}` ? { value: m, selected: "" } : { value: m }, m))),
+    models: el("textarea", {}, lines((p.models || {}).allow)),
+    tools: el("textarea", {}, lines(p.mcp_tools)),
+    rpm: el("input", { type: "number", min: "1", value: (p.limits || {}).requests_per_minute ?? "" }),
+    tpm: el("input", { type: "number", min: "1", value: (p.limits || {}).tokens_per_minute ?? "" }),
+    budget: el("input", { type: "number", min: "0", step: "any", value: p.budget ? p.budget.usd_per_30_days : "" }),
+    keys: el("textarea", {}, lines(p.keys)),
+    deployments: el("input", p.deployments ? { type: "checkbox", checked: "" } : { type: "checkbox" }),
+  };
+  const fixedRow = el("span", {}, " ", f.fixed);
+  const syncFixed = () => { fixedRow.hidden = f.routing.value !== "fixed"; };
+  f.routing.addEventListener("change", syncFixed); syncFixed();
+  const sub = (cur, nxt) => nxt === null ? null : { ...Object.fromEntries(Object.keys(cur || {}).map((k) => [k, null])), ...nxt };  // merge patch: removed keys as null
+  const body = () => {
+    const want = {
+      owner: f.owner.value.trim() || null, description: f.description.value.trim() || null, data_class: f.data_class.value,
+      placement: (() => { const v = f.placement.map((l) => l.querySelector("input")).filter((i) => i.checked).map((i) => i.value); return v.length ? v : null; })(),
+      routing: f.routing.value === "cheapest" ? null : f.routing.value === "fixed" ? `fixed:${f.fixed.value}` : f.routing.value,
+      models: (() => { const v = list(f.models); return v.length && !(v.length === 1 && v[0] === "*") ? { allow: v } : null; })(),
+      mcp_tools: (() => { const v = list(f.tools); return v.length ? v : null; })(),
+      limits: (() => { const o = {}; const r = num(f.rpm, "Requests per minute"), t = num(f.tpm, "Tokens per minute"); if (r) o.requests_per_minute = r; if (t) o.tokens_per_minute = t; return Object.keys(o).length ? o : null; })(),
+      budget: (() => { if (f.budget.value.trim() === "") return null; const n = Number(f.budget.value); if (!(n > 0)) throw new Error("Budget: more than 0 USD, or empty for no cap"); return { usd_per_30_days: n }; })(),
+      keys: list(f.keys), deployments: f.deployments.checked || null,
+    };
+    const curOf = (k) => k === "routing" && p.routing === "cheapest" ? null : k === "models" && p.models && json(p.models.allow) === json(["*"]) ? null : k === "deployments" && p.deployments === false ? null : p[k] ?? null;
+    const spec = {};
+    for (const [k, v] of Object.entries(want)) {
+      if (json(curOf(k)) === json(v)) continue;
+      spec[k] = ["limits", "budget", "models"].includes(k) ? sub(p[k], v) : v;
+    }
+    if (!Object.keys(spec).length) throw new Error("Nothing changed.");
+    return { spec };
+  };
+  const row = (label, input, hint) => [el("label", {}, label), el("div", {}, input, hint ? el("div", { class: "hint" }, hint) : null)];
+  const advanced = el("textarea", {}, json({ limits: p.limits || {}, budget: p.budget || null }));
+  const form = el("div", { class: "form" },
+      row("Owner", f.owner), row("Description", f.description),
+      row("Data class", f.data_class, "The most sensitive data it sends; caps where its requests may go (the data_classes setting)."),
+      row("Placement", f.placement, "None ticked: everything its data class allows. Ticked: only these, within the class."),
+      row("Model for auto", [f.routing, fixedRow], "cheapest, fastest (measured), semantic (by task), or always one model."),
+      row("Models", f.models, "Glob patterns over catalog model names, one per line. Empty: every model its placements allow."),
+      row("MCP tools", f.tools, "Glob patterns over tool names (grafana_*, kagent-tools_*), one per line. Empty: none."),
+      row("Requests per minute", f.rpm, "Empty: no limit."), row("Tokens per minute", f.tpm, "Empty: no limit."),
+      row("Budget, USD per 30 days", f.budget, "Empty: no cap. At the cap the gateway answers 429."),
+      row("Keys", f.keys, "One id per line: the project id, or it and a dash and a suffix. A new id gets a key in Vault; a removed one is revoked."),
+      row("Calls deployments directly", el("label", {}, f.deployments, " by KServe's path route (the onboarding pipeline)")));
+  return el("div", {}, form,
+    proposal("projects", id, "update", body, null, [form]),
+    el("details", { style: "margin-top:12px" }, el("summary", { class: "muted" }, "Or edit as a JSON merge patch"),
+      el("p", { class: "muted" }, "Set a field to change it, null to remove it."), advanced,
+      proposal("projects", id, "update", () => ({ spec: JSON.parse(advanced.value) }), null, [advanced])));
 }
 
 // The policy's parameters reviewers decide (the gateway policy's settings/schema.json).
@@ -208,47 +348,37 @@ async function viewSettings() {
 
 function settingPanel(id, spec, canPropose) {
   const text = el("textarea", {}, json(spec ?? {}));
-  const msg = el("p");
-  const submit = async () => {
-    msg.className = ""; msg.textContent = "Submitting…";
-    try {
-      const body = { spec: JSON.parse(text.value) };
-      const ch = spec === undefined ? await api("POST", `/settings/${id}`, body) : await api("PATCH", `/settings/${id}`, body);
-      msg.className = "success"; msg.textContent = `Change ${ch.id} submitted; it needs: ${ch.required_approvals.join(", ")}. Its replay shows what it would change.`;
-    } catch (e) { msg.className = "error"; msg.textContent = e.message; }
-  };
   return el("section", { class: "panel" }, el("h2", {}, id),
     el("p", { class: "muted" }, SETTINGS[id] + (spec === undefined ? " Not set: the policy's own values apply." : "")),
     text,
-    canPropose ? el("div", { class: "row" }, el("button", { class: "action primary", onclick: submit }, spec === undefined ? "Propose" : "Propose a change"))
-               : el("p", { class: "muted" }, "The platform team proposes a change; the platform team and security approve it."),
-    msg);
+    canPropose ? proposal("settings", id, spec === undefined ? "create" : "update", () => ({ spec: JSON.parse(text.value) }), null, [text])
+               : el("p", { class: "muted" }, "The platform team proposes a change; the platform team and security approve it."));
 }
 
 function newProjectPanel() {
   const id = el("input", { type: "text", placeholder: "project id" });
   const owner = el("input", { type: "text", placeholder: "owner group (Keycloak)" });
   const spec = el("textarea", {}, json({ project: "", owner: "", description: "", data_class: "internal", keys: [] }));
-  const msg = el("p");
-  const submit = async () => {
-    try {
-      const body = JSON.parse(spec.value); body.project = id.value;
-      const ch = await api("POST", `/projects/${encodeURIComponent(id.value)}`, { spec: body, owner_group: owner.value });
-      msg.className = "success"; msg.textContent = `Change ${ch.id} submitted; it needs: ${ch.required_approvals.join(", ")}.`;
-    } catch (e) { msg.className = "error"; msg.textContent = e.message; }
-  };
+  const box = el("div");
+  const draw = () => box.replaceChildren(proposal("projects", id.value, "create", () => {
+    if (!id.value) throw new Error("The project needs an id.");
+    const body = JSON.parse(spec.value); body.project = id.value;
+    return { spec: body, owner_group: owner.value };
+  }, "Review request", [owner, spec]));
+  id.addEventListener("change", draw); draw();
   return el("section", { class: "panel" }, el("h2", {}, "Request a new project"),
-    el("div", { class: "row" }, id, owner), spec, el("div", { class: "row" }, el("button", { class: "action", onclick: submit }, "Request project")), msg);
+    el("div", { class: "row" }, id, owner), spec, box);
 }
 
-function changesTable(changes) {
+function changesTable(changes, withYours) {
   if (!changes.length) return el("p", { class: "muted" }, "None.");
-  return el("table", {}, el("thead", {}, el("tr", {}, ["#", "Object", "Change", "State", "Needs", "Approved", "By", "When"].map((h) => el("th", {}, h)))),
-    el("tbody", {}, changes.map((c) => el("tr", { class: "clickable", onclick: () => viewChange(c.id) },
+  return el("table", {}, el("thead", {}, el("tr", {}, ["#", "Object", "Change", "State", "Needs", "Approved", "By", "When", ...(withYours ? ["Yours to give"] : [])].map((h) => el("th", {}, h)))),
+    el("tbody", {}, changes.map((c) => el("tr", { class: "clickable", onclick: () => go(`changes/${c.id}`) },
       el("td", {}, c.id), el("td", {}, `${c.kind} ${c.object_id}`), el("td", {}, c.op),
       el("td", { class: `state-${c.state}` }, c.state), el("td", {}, c.required_approvals.map((r) => el("span", { class: "chip" }, r))),
       el("td", {}, c.approvals.map((a) => el("span", { class: "chip" }, `${a.role}: ${a.approver}${a.decision === "reject" ? " ✗" : ""}`))),
-      el("td", {}, c.created_by), el("td", { class: "muted" }, when(c.created_at))))));
+      el("td", {}, c.created_by), el("td", { class: "muted" }, when(c.created_at)),
+      withYours ? el("td", {}, (c.yours || []).map((r) => el("span", { class: "chip" }, r))) : null))));
 }
 
 async function viewChanges() {
@@ -259,25 +389,20 @@ async function viewChanges() {
   await load();
 }
 
-function changedKeys(before, after) {
-  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
-  return [...keys].filter((k) => json((before || {})[k]) !== json((after || {})[k]));
-}
-
 async function viewChange(cid) {
-  show_nav("changes");
   const c = await api("GET", `/changes/${cid}`);
   const comment = el("input", { type: "text", placeholder: "comment (optional)", size: 40 });
   const msg = el("p");
   const act = (what) => async () => {
-    try { await api("POST", `/changes/${cid}/${what}`, { comment: comment.value || null }); await viewChange(cid); }
+    try { await api("POST", `/changes/${cid}/${what}`, { comment: comment.value || null }); route(); }
     catch (e) { msg.className = "error"; msg.textContent = e.message; }
   };
   const done = new Set(c.approvals.filter((a) => a.decision === "approve").map((a) => a.role));
   const open = c.required_approvals.filter((r) => !done.has(r));
-  const diff = changedKeys(c.before, c.after).map((k) => el("tr", {}, el("td", {}, el("strong", {}, k)),
-    el("td", {}, el("pre", {}, json((c.before || {})[k] ?? null))), el("td", {}, el("pre", {}, json((c.after || {})[k] ?? null)))));
+  const diff = changedPaths(c.before, c.after).filter(() => c.before && c.after).map(([k, a, z]) => el("tr", {}, el("td", {}, el("code", {}, k)), el("td", { class: "muted" }, a), el("td", {}, z)));
   const pending = ["pending_approval", "approved"].includes(c.state);
+  const yours = c.yours || [];
+  const mayWithdraw = c.created_by === me.name || me.groups.includes("platform-admins");
   $main.replaceChildren(
     el("section", { class: "panel" }, el("h2", {}, c.kind === "policy" ? `Change ${c.id}: policy at ${c.object_id.slice(0, 12)}` : `Change ${c.id}: ${c.op} ${c.kind} ${c.object_id}`),
       el("p", {}, "State: ", el("strong", { class: `state-${c.state}` }, c.state), c.bundle_revision ? ` · bundle ${c.bundle_revision}` : "",
@@ -285,11 +410,13 @@ async function viewChange(cid) {
       c.error ? el("p", { class: "error" }, c.error) : null,
       el("p", {}, "Needs: ", c.required_approvals.map((r) => el("span", { class: "chip" }, r + (done.has(r) ? " ✓" : "")))),
       c.approvals.length ? el("ul", {}, c.approvals.map((a) => el("li", {}, `${a.decision} as ${a.role} by ${a.approver}, ${when(a.at)}${a.comment ? ": " + a.comment : ""}`))) : null,
-      pending ? el("div", { class: "row" }, comment,
-        c.state === "pending_approval" ? el("button", { class: "action primary", onclick: act("approve") }, "Approve") : null,
-        c.state === "pending_approval" ? el("button", { class: "action danger", onclick: act("reject") }, "Reject") : null,
-        el("button", { class: "action", onclick: act("withdraw") }, "Withdraw")) : null,
-      pending && open.length ? el("p", { class: "muted" }, `Open: ${open.join(", ")}. The registry decides if one of them is yours; nobody approves their own change.`) : null,
+      pending && (yours.length || mayWithdraw) ? el("div", { class: "row" }, comment,
+        yours.length ? el("button", { class: "action primary", onclick: act("approve") }, `Approve as ${yours[0]}`) : null,
+        yours.length ? el("button", { class: "action danger", onclick: act("reject") }, "Reject") : null,
+        mayWithdraw ? el("button", { class: "action", onclick: act("withdraw") }, "Withdraw") : null) : null,
+      pending && open.length ? el("p", { class: "muted" }, `Open: ${open.join(", ")}. `,
+        yours.length ? `You may give: ${yours.join(", ")}.` : c.created_by === me.name ? "You wrote it, so none is yours to give." : "None of them is yours to give.",
+        " Send its address to an approver: ", el("code", {}, location.href)) : null,
       msg),
     c.kind === "policy" ? policyPanel(c) : el("section", { class: "panel" }, el("h2", {}, "What changes"),
       diff.length ? el("table", {}, el("thead", {}, el("tr", {}, ["Field", "Before", "After"].map((h) => el("th", {}, h)))), el("tbody", {}, diff)) : el("p", { class: "muted" }, "Nothing (whole record created or removed)."),
@@ -338,7 +465,7 @@ async function viewPublications() {
   const rollback = (rev) => async (ev) => {
     ev.stopPropagation();
     if (!confirm(/^projects-/.test(rev) ? `Activate ${rev} again and restore the records it was published from?` : `Activate policy ${rev.slice(0, 12)} again?`)) return;
-    try { await api("POST", `/rollback/${encodeURIComponent(rev)}`); await viewPublications(); }
+    try { await api("POST", `/rollback/${encodeURIComponent(rev)}`); route(); }
     catch (e) { msg.className = "error"; msg.textContent = e.message; }
   };
   $main.replaceChildren(el("section", { class: "panel" }, el("h2", {}, "Published bundles"),
@@ -385,25 +512,26 @@ function budgetMeter(p) {
 const numTh = (h) => el("th", { class: "num" }, h);
 const numTd = (v) => el("td", { class: "num" }, v);
 
-async function viewUsage(arg) {
-  const opts = Object.assign({ days: 30, project: "" }, arg || {});
+async function viewUsage(params) {
+  const opts = { days: Number((params || {}).days) || 30, project: (params || {}).project || "" };
+  const goUsage = (o) => go(`usage?${new URLSearchParams(Object.entries({ ...opts, ...o }).filter(([, v]) => v !== ""))}`);
   const end = isoDay(new Date()), startD = new Date(); startD.setUTCDate(startD.getUTCDate() - (opts.days - 1));
   const start = isoDay(startD);
   const q = new URLSearchParams({ start, end }); if (opts.project) q.set("project", opts.project);
   const r = await api("GET", `/usage?${q}`);
-  const range = el("select", { onchange: () => show("usage", { ...opts, days: Number(range.value) }) },
+  const range = el("select", { onchange: () => goUsage({ days: Number(range.value) }) },
     [7, 30, 90].map((n) => el("option", n === opts.days ? { value: n, selected: "" } : { value: n }, `Last ${n} days`)));
-  const pick = el("select", { onchange: () => show("usage", { ...opts, project: pick.value }) },
+  const pick = el("select", { onchange: () => goUsage({ project: pick.value }) },
     el("option", { value: "" }, "All my projects"), r.projects.map((p) => el("option", p === opts.project ? { value: p, selected: "" } : { value: p }, p)));
   const t = r.totals;
   const tiles = el("div", { class: "tiles" }, [["Spend", usd(t.cost_usd)], ["Model calls", count(t.requests)], ["Tokens", count(t.tokens)],
     ["Refused by policy (403)", count(t.denied)], ["Over a limit (429)", count(t.limited)]].map(([k, v]) => el("div", { class: "tile" }, el("div", { class: "label" }, k), el("div", { class: "value" }, v))));
   const projects = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Project"), numTh("Spend"), el("th", {}, "Last 30 days of the budget"), numTh("At this week's pace"), numTh("Calls"), numTh("Tokens"), numTh("403"), numTh("429"), el("th", {}, ""))),
-    el("tbody", {}, r.by_project.map((p) => el("tr", { class: "clickable", onclick: () => show("usage", { ...opts, project: p.project || "" }) },
+    el("tbody", {}, r.by_project.map((p) => el("tr", { class: "clickable", onclick: () => goUsage({ project: p.project || "" }) },
       el("td", {}, p.project ? el("strong", {}, p.project) : el("span", { class: "muted" }, "no project (before the log had one)")),
       numTd(usd(p.cost_usd)), el("td", {}, budgetMeter(p)), numTd(p.budget_usd_30d ? usd(p.forecast_30d) : ""),
       numTd(count(p.requests)), numTd(count(p.tokens)), numTd(count(p.denied)), numTd(count(p.limited)),
-      el("td", {}, p.project ? el("button", { class: "action", onclick: (ev) => { ev.stopPropagation(); viewProject(p.project); } }, "Limits and budget…") : null)))));
+      el("td", {}, p.project ? el("button", { class: "action", onclick: (ev) => { ev.stopPropagation(); go(`projects/${encodeURIComponent(p.project)}`); } }, "Limits and budget…") : null)))));
   const models = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Model"), el("th", {}, "Placement"), numTh("Calls"), numTh("Of them via auto"), numTh("Input tokens"), numTh("Output tokens"), numTh("Spend"))),
     el("tbody", {}, r.by_model.map((m) => el("tr", {}, el("td", {}, m.model || ""), el("td", {}, m.placement ? el("span", { class: "chip" }, m.placement) : ""),
       numTd(count(m.requests)), numTd(count(m.via_auto)), numTd(count(m.input_tokens)), numTd(count(m.output_tokens)), numTd(usd(m.cost_usd))))));
@@ -462,8 +590,9 @@ function show_nav(view) { for (const b of document.querySelectorAll("nav button"
     document.getElementById("who").textContent = `${me.name} · ${me.groups.join(", ")}`;
     document.getElementById("nav").hidden = false;
     const out = document.getElementById("logout"); out.hidden = false; out.onclick = logout;
-    for (const b of document.querySelectorAll("nav button")) b.onclick = () => show(b.dataset.view);
-    show("projects");
+    for (const b of document.querySelectorAll("nav button")) b.onclick = () => go(b.dataset.view);
+    window.addEventListener("hashchange", route);
+    route();
   } catch (e) { $main.replaceChildren(el("p", { class: "error" }, e.message)); }
 })();
 </script>
