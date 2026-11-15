@@ -49,7 +49,7 @@ the chart in this directory is a policy change.
 The deployment repo's CI checks its own wiring against its registry seed (the catalog a
 new cluster starts with): its MCP targets, serving namespaces and the semantic router's
 decisions against the catalog's settings, and the kagent agents' keys against the seed (`KAGENT_VALUES`,
-`KAGENT_RESOURCES`: each agent's secret is a copy of one of its keys). The gateway's
+`KAGENT_RESOURCES`: each agent's ModelConfig reads a `vaultSecrets` copy of one of its keys). The gateway's
 API keys themselves the registry writes to Vault from its records.
 
 ## Locally

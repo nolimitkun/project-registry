@@ -150,15 +150,28 @@ onboarding pipeline promotes shows up without a catalog edit.
 ### Approval rules are policy
 
 The registry sends a change's diff to OPA and asks
-`data.portal.required_approvals`. The rules are Rego in Git, reviewed like
-the gateway policy.
+`data.portal.required_approvals`. The answer has three parts (`policy/policies/gateway/portal.rego`):
+
+- **Triggers, in code:** what a change does (`project.limit_raised`,
+  `project.data_class_changed`, `agent.autonomy_raised`, `model.price_changed`, ...).
+- **Who approves each trigger, in data:** the `approvals` setting, a registry record
+  reviewers change in the portal like any other.
+- **Floors, in code, that no setting can lower:** a project's owner for its project,
+  agents and exceptions; the platform team for a new project, the policy, the catalog
+  and the settings; security for the policy and the settings. So nobody can weaken the
+  approval of the settings through the settings.
+
+Today's approvals setting, with the floors:
 
 | The change | Approved by |
 |------------|-------------|
 | Add or remove models within the data class, lower a limit, edit a description | the project owner |
 | Raise a limit or the budget | plus the cost owner |
-| Raise `data_class`, add an exception (with an expiry date), wildcard `mcp_tools`, raise an agent's `autonomy` | plus security |
+| Change `data_class` or widen the placement, add an exception, a wildcard in `mcp_tools`, raise an agent's `autonomy` (or give it more tool risks) | plus security |
 | Create a project | the platform team and security |
+| A model or Google API: new, placement or provider; a tool made less risky; the MCP targets or serving namespaces | the platform team and security |
+| A model's price | the platform team and the cost owner |
+| A policy commit, or a setting | the platform team and security (floors) |
 
 Two rules hold for every change:
 
@@ -263,9 +276,11 @@ they differ, then the policy. If either bundle moved while the change waited,
 it is checked again first: an unsafe result fails it, and an outcome the
 approvers didn't see sends it back to them. A newer commit supersedes a
 change still waiting, and a commit whose test fails is filed as `failed`.
-A commit that changes only inert files (docs, CI, tools no publish runs) and
-neither bundle is recorded as `skipped`, with no approval; OPA keeps the active
-commit. Every other file is presumed to matter: the renderers, the schemas and the
+A commit that changes nothing in `policy/` (the registry's own code only) is followed
+with no change request: OPA gets the same bundle under the new commit, so the active
+policy stays on the branch. A commit that changes only inert files in `policy/` (docs,
+CI, tools no publish runs) and neither bundle is recorded as `skipped`, with no
+approval; OPA keeps the active commit. Every other file is presumed to matter: the renderers, the schemas and the
 gateway-models chart act through the active commit, so a change to them must become
 active even when today's bundles come out the same.
 Before merging, `scripts/policy-replay.py` gives the replay from a checkout.
@@ -294,9 +309,10 @@ Before merging, `scripts/policy-replay.py` gives the replay from a checkout.
 
 ## API
 
-Built in the proof of concept. `{collection}` is `projects`, `agents` or
-`exceptions`; every edit creates a change request, and the record changes only
-once it is published.
+Built in the proof of concept. `{collection}` is `projects`, `agents`,
+`exceptions`, the catalog's `models`, `google-apis`, `tools` and `catalog`, or
+`settings`; every edit creates a change request, and the record changes only once it
+is published.
 
 ```
 GET    /{collection}                  GET    /{collection}/{id}
@@ -306,6 +322,7 @@ PATCH  /{collection}/{id}             update  (body: {"spec": <JSON merge patch>
 DELETE /{collection}/{id}             delete
 GET    /changes/{id}                  the diff, approvals needed and given, replay
                                       report, state, bundle revision
+GET    /changes/{id}/diff             a policy change's files with unified diffs (the portal shows them)
 POST   /changes/{id}/approve|reject   (body: {"comment": ...})
 POST   /changes/{id}/withdraw         its author or the platform team, before it is published
 GET    /publications                  published revisions, newest first
@@ -377,11 +394,12 @@ change `platform-admin` proposes is approved by an owner who isn't its author;
 
 ### Where the records are, and their copies
 
-The projects, agents and exceptions, and the catalog (models, Google APIs, MCP
-tools and the catalog's settings), live only in the registry's database. The
-policy repo has their format and the renderers, not a copy: no `projects/*.yaml`,
-no `catalog/*.yaml`, no generated `policies/gateway-projects/` data, no export
-pull requests.
+The projects, agents and exceptions, the catalog (models, Google APIs, MCP tools
+and the catalog's settings), and the policy's settings (`data_classes`, `autonomy`,
+`approvals`) live only in the registry's database. This repository's `policy/` has
+their format and the renderers, not a copy: no `projects/*.yaml`, no
+`catalog/*.yaml`, no `settings/*.yaml`, no generated `policies/gateway-projects/`
+data, no export pull requests.
 
 - **Copies:** the CronJob `project-registry-snapshot` (03:00 UTC) writes every
   record to `registry-snapshots/<time>.json` and `latest.json` in the bundle
