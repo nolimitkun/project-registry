@@ -63,12 +63,23 @@ None of these is a backup of the database (approvals, audit log).
 
 `/export` returns every record (a signed-in user).
 
+**Spend and usage.** An hourly job (`python -m registry.usage`, `registry/usage.py`) reads the gateway's access log from Loki: one line per request, with the project and key the gateway adds, the model, tokens, the cost the gateway charged (what budgets count), status and duration. It writes Parquet to its own bucket (`USAGE_BUCKET`) and shapes it with DuckDB:
+
+- `raw/date=D/hour=HH.parquet`: one file per hour, rewritten whole; each run takes the last `USAGE_LOOKBACK_HOURS` (3) again, for lines that came late, and any hour of the last `USAGE_BACKFILL_HOURS` (168, about what Loki keeps) that has no file yet;
+- `dims/date=D/`: that day's projects (owner group, budget, limits), keys with the agent each belongs to, and models (placement, price), so a day's spend is read against that day's budget;
+- `fact/date=D/part.parquet`, one row per request, deduplicated on (trace id, span id), with the model as the catalog names it (a KServe model's served name and `auto`'s virtual model mapped back) and its outcome: `ok`, `denied` (OPA's 403), `limited` (the rate limit's 429), `error` (including a provider's 429), `unauthenticated`;
+- `daily/date=D/part.parquet`: per project, agent, key, kind of request (`model`, `list` for `/v1/models`, `mcp`, `other`), model and outcome;
+- `state.json`: up to when it is complete.
+
+Its runs record health as the output `usage`. `GET /usage` reports a date range from the daily files and `GET /usage/requests` a project's requests of one day from the facts, both for the projects the caller may see: every one for the platform team and the cost owners, otherwise those of the caller's owner groups. The API caches the files locally and queries them in process with DuckDB. Parquet travels through boto3, not DuckDB's S3 extension, which it would download at run time.
+
 **Portal.** The registry serves a page at `/portal/` (one HTML file, `registry/static/portal.html`, same origin as the API) with these views:
 
 - projects, and their changes;
 - proposing a change (a JSON merge patch) or a new project;
 - change requests with their diff, approvals and replay report, and approve, reject and withdraw;
-- the published bundles of both kinds, with rollback for the platform team.
+- the published bundles of both kinds, with rollback for the platform team;
+- usage: spend per day, each project's last 30 days against its budget and its pace, models (and what `auto` chose), agents and keys, what on-prem models served (`USAGE_REFERENCE_MODEL` prices it), and a project's dearest requests of a day with their trace ids.
 
 People log in to Keycloak with the authorization code flow and PKCE, through the public client `project-registry`; there is no client secret. `/opa/status` and `/metrics` refuse requests that came through the ingress.
 
@@ -99,6 +110,7 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 | `registry/keys.py` | the gateway's API key maps in Vault, written from the records |
 | `registry/vault.py` | Vault: Kubernetes login, Transit signing, KV reads and writes |
 | `registry/snapshot.py` | the daily snapshot of the records into the bundle store |
+| `registry/usage.py` | the gateway's spend and usage: access log → Parquet → DuckDB, and the reports `/usage` serves |
 | `registry/importer.py` | the first load of an empty registry: the latest snapshot, or the seed |
 | `registry/bundles.py` | build, sign, verify; the versioned bundle store (S3/MinIO) |
 | `registry/render.py` | rendering through the policy repo's `gen-projects.py` (`POLICY_REPO`) |
@@ -116,4 +128,4 @@ The tests need `opa` on `PATH`. The flow tests need a disposable Postgres. They 
 
 ## Deployment
 
-The `project-registry` application in the deployment repo deploys the API, the publisher, the daily snapshot and its Postgres; the `opa-policy` application deploys OPA. The image is `ghcr.io/nolimitkun/project-registry`.
+The `project-registry` application in the deployment repo deploys the API, the publisher, the daily snapshot, the hourly usage job and its Postgres; the `opa-policy` application deploys OPA. The image is `ghcr.io/nolimitkun/project-registry`.

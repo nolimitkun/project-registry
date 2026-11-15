@@ -22,7 +22,9 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
-from . import activation, approvals, health, wakeup
+import datetime as dt
+
+from . import activation, approvals, health, usage, wakeup
 from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
 from . import bundles
@@ -64,8 +66,9 @@ def merge(base: dict, patch: dict) -> dict:
 class Registry:
     def __init__(self, db: dbm.DB, renderer: Renderer, store: Store, opa_url: str,
                  policy_bundle="gateway-policy", data_bundle="gateway-projects", signing_keyid: str | None = None,
-                 kagent_wiring=None):
+                 kagent_wiring=None, usage_reader: usage.Reader | None = None):
         self.db, self.renderer, self.store, self.opa_url = db, renderer, store, opa_url.rstrip("/")
+        self.usage = usage_reader            # the gateway's spend and usage (usage.py), if configured
         self.kagent_wiring = kagent_wiring    # checks a proposed agent's kagent wiring (render.py)
         self.policy_bundle, self.data_bundle = policy_bundle, data_bundle
         self.signing_keyid = signing_keyid or os.environ.get("SIGNING_KEYID")
@@ -386,6 +389,55 @@ def create_app(reg: Registry) -> FastAPI:
     def withdraw(change_id: int, body: Decision, user: User = Depends(current_user)):
         return reg.withdraw(user, change_id, body.comment)
 
+    # --- spend and usage (usage.py: the gateway's access log, as Parquet) ---
+    def usage_scope(user: User) -> set[str] | None:
+        """The projects whose usage a caller sees: all of them (None) for the platform team
+        and the cost owners, else those of the caller's owner groups."""
+        if reg.usage is None:
+            raise HTTPException(404, "usage is not configured (USAGE_BUCKET)")
+        if user.groups & {ROLE_GROUPS["platform"], ROLE_GROUPS["cost_owner"]}:
+            return None
+        with reg.db.tx() as c:
+            return {r["project_id"] for r in c.execute("select project_id, owner_group from project_owner").fetchall()
+                    if r["owner_group"] in user.groups}
+
+    def a_date(value: str | None, default: dt.date) -> dt.date:
+        try:
+            return dt.date.fromisoformat(value) if value else default
+        except ValueError as e:
+            raise HTTPException(422, f"not a date: {value}") from e
+
+    @app.get("/usage")
+    def usage_report(start: str | None = None, end: str | None = None, project: str | None = None,
+                     user: User = Depends(current_user)):
+        """Spend and usage of [start, end] (default: the last 30 days), for every project the
+        caller may see or for one, with each project's spend in the 30 days up to `end`
+        against its budget."""
+        visible = usage_scope(user)
+        today = dt.datetime.now(dt.timezone.utc).date()
+        end_d = a_date(end, today)
+        start_d = a_date(start, end_d - dt.timedelta(days=29))
+        if not start_d <= end_d or (end_d - start_d).days > 366:
+            raise HTTPException(422, "start must be before end, at most a year apart")
+        if project is not None and visible is not None and project not in visible:
+            raise HTTPException(403, f"not an owner of project {project}")
+        with reg.db.tx() as c:
+            records = dbm.resources(c)
+        budgets = {pid: (p.get("budget") or {}).get("usd_per_30_days") for pid, p in records["project"].items()}
+        prices = {m: spec.get("price") for m, spec in records.get("model", {}).items()}
+        out = usage.report(reg.usage, visible, start_d, end_d, end_d, project, budgets, prices,
+                           os.environ.get("USAGE_REFERENCE_MODEL", "gemini-3.5-flash"))
+        out["projects"] = sorted(records["project"]) if visible is None else sorted(visible)
+        return out
+
+    @app.get("/usage/requests")
+    def usage_requests(project: str, date: str, limit: int = 50, user: User = Depends(current_user)):
+        """A project's requests of one day, the dearest first: what each key and model cost."""
+        visible = usage_scope(user)
+        if visible is not None and project not in visible:
+            raise HTTPException(403, f"not an owner of project {project}")
+        return usage.requests_of(reg.usage, project, a_date(date, dt.date.today()), max(1, min(limit, 500)))
+
     @app.get("/export")
     def export(user: User = Depends(current_user)):
         """Every record: {"project": {id: spec}, "agent": {...}, "exception": {...}}, each spec in
@@ -497,9 +549,10 @@ def _from_env() -> FastAPI:
     db = dbm.DB(env["DATABASE_URL"])
     db.migrate()
     s3 = boto3.client("s3", endpoint_url=env["S3_ENDPOINT"], region_name=env.get("AWS_REGION", "us-east-1"))
+    reader = usage.Reader(usage.Bucket(s3, env["USAGE_BUCKET"])) if env.get("USAGE_BUCKET") else None
     return create_app(Registry(db, renderer_from_env(env),
                                Store(s3, env["S3_BUCKET"], env.get("BUNDLE_PREFIX", "")), env["OPA_URL"],
-                               kagent_wiring=kagent_wiring_from_env(env)))
+                               kagent_wiring=kagent_wiring_from_env(env), usage_reader=reader))
 
 
 app = _from_env() if os.environ.get("DATABASE_URL") else None

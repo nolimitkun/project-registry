@@ -312,9 +312,17 @@ Before merging, `scripts/policy-replay.py` gives the replay from a checkout.
   name), and `GatewayModelPriceDrift` fires when what the gateway charged for a
   model differs from its tokens at the catalog price, which also catches a new
   model the gateway's table doesn't know (charged $0). Built.
-- **Usage pages** in the portal read Prometheus (spend, requests),
-  agentgateway Analytics and Langfuse. Not built: the PoC portal shows the
-  records, changes and publications only.
+- **Usage page** in the portal: spend and usage per project, agent, key and
+  model, each project's 30 days against its budget, and a project's dearest
+  requests with their trace ids. Read from a ledger of the gateway's access log
+  rather than Prometheus, whose 15 days, counter resets and project-only labels
+  can't answer per key or per month: an hourly job (`registry/usage.py`) takes
+  the lines from Loki into Parquet in MinIO and shapes them with DuckDB
+  (deduplicated per request, models named as the catalog does, joined with
+  that day's records); the API queries the daily files in process and shows
+  each caller only its projects (all of them to the platform team and cost
+  owners). Built. Not built: users rather than keys (needs OAuth clients),
+  and Iceberg and a query engine for when one process per hour is too few.
 - **The budget window** stays the rate-limit service's fixed 30-day window
   (`budget.usd_per_30_days`), now sent as an override with unit `month`.
 
