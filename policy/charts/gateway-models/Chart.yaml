@@ -1,0 +1,12 @@
+apiVersion: v2
+name: gateway-models
+description: >-
+  The gateway's model routes, from the catalog: one AgentgatewayModel per model,
+  the auto virtual models (one per task class), and the Google API routes. The
+  project registry packages this chart at the active policy commit, with the
+  catalog as its values, and publishes it to its Helm repository in MinIO; the
+  deployment repo's Argo CD application installs it with the gateway's own
+  values (gatewayName, gcp, kserve, auto).
+type: application
+# The registry sets the version (1.0.<publication>) and appVersion (the policy commit).
+version: 0.0.0

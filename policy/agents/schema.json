@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent",
+  "description": "One agent registered with the platform: who owns it, what it is for, which project it belongs to, and the narrower set of models and tools it may use. scripts/gen-projects.py turns it into the policy's data.agents.<id> and the project's agent_keys; OPA applies the agent's scope to every call made with one of its keys.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agent", "project", "owner", "description", "runtime", "autonomy", "keys"],
+  "properties": {
+    "agent": {"description": "Agent id; the file name without .yaml.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "project": {"description": "The project the agent belongs to (projects/<id>.yaml). Its data class, placement, limits and budget apply; the agent can only narrow them.", "type": "string"},
+    "owner": {"description": "Team accountable for the agent.", "type": "string", "minLength": 1},
+    "description": {"description": "What the agent is for: its mission, shown in agentregistry.", "type": "string", "minLength": 1},
+    "runtime": {
+      "description": "Where the agent runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": {"enum": ["kagent", "holmes", "external"]},
+        "name": {"description": "The runtime's own name for it, e.g. the kagent Agent resource.", "type": "string"}
+      }
+    },
+    "autonomy": {
+      "description": "How far it acts on its own. read-only: only reads. supervised: changes need a human approval. autonomous: may change things without one. Recorded and published; not yet enforced per tool.",
+      "enum": ["read-only", "supervised", "autonomous"]
+    },
+    "keys": {
+      "description": "Ids of the agent's own gateway API keys: the project id, or the project id, a dash and a suffix, unique across projects and agents. Calls with these keys get the agent's scope, not the project's.",
+      "type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {"description": "Patterns over model names; the agent may use a model the project may use that one of them matches. Absent: the project's models.", "type": "array", "minItems": 1, "items": {"type": "string"}}
+      }
+    },
+    "mcp_tools": {"description": "Patterns over prefixed MCP tool names. A tool call needs a match here and in the project's mcp_tools. Absent: none.", "type": "array", "items": {"type": "string"}}
+  }
+}

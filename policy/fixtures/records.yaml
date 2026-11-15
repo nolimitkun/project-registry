@@ -1,0 +1,829 @@
+# Test records: what CI renders to test the policy with (scripts/validate.sh).
+# A copy of the platform's projects as the deployment repo's registry seed had
+# them; the project registry holds the real records. The Rego tests use these
+# names (admin, open-webui, kagent, holmes, model-onboarding, the kagent agents).
+#
+# Format: the registry's GET /export without "revision". Each project, agent and
+# exception has the format of projects/schema.json and agents/schema.json.
+agent:
+  holmes:
+    agent: holmes
+    autonomy: supervised
+    description: Root-cause analysis of alerts and incidents from cluster state, logs, metrics, traces and Argo CD (HolmesGPT).
+    keys:
+    - holmes
+    mcp_tools:
+    - grafana_*
+    models:
+      allow:
+      - deepseek-v4-pro
+    owner: platform team
+    project: holmes
+    runtime:
+      kind: holmes
+      name: holmes
+  kagent-helm-agent:
+    agent: kagent-helm-agent
+    autonomy: autonomous
+    description: Lists, installs, upgrades and rolls back Helm releases (kagent's helm-agent).
+    keys:
+    - kagent-helm-agent
+    models:
+      allow:
+      - deepseek-v4-pro
+    owner: platform team
+    project: kagent
+    runtime:
+      kind: kagent
+      name: helm-agent
+  kagent-k8s-agent:
+    agent: kagent-k8s-agent
+    autonomy: autonomous
+    description: Inspects and changes Kubernetes resources in the cluster on request (kagent's k8s-agent).
+    keys:
+    - kagent-k8s-agent
+    models:
+      allow:
+      - deepseek-v4-pro
+    owner: platform team
+    project: kagent
+    runtime:
+      kind: kagent
+      name: k8s-agent
+  kagent-observability-agent:
+    agent: kagent-observability-agent
+    autonomy: read-only
+    description: Answers questions from Prometheus metrics and Grafana dashboards (kagent's observability-agent).
+    keys:
+    - kagent-observability-agent
+    models:
+      allow:
+      - deepseek-v4-pro
+    owner: platform team
+    project: kagent
+    runtime:
+      kind: kagent
+      name: observability-agent
+  kagent-promql-agent:
+    agent: kagent-promql-agent
+    autonomy: read-only
+    description: Writes PromQL queries from a plain-language question (kagent's promql-agent).
+    keys:
+    - kagent-promql-agent
+    models:
+      allow:
+      - deepseek-v4-pro
+    owner: platform team
+    project: kagent
+    runtime:
+      kind: kagent
+      name: promql-agent
+catalog:
+  settings:
+    servingNamespaces:
+    - model-hprd
+    - model-prod
+    targets:
+    - grafana
+    - kagent-tools
+    tasks:
+      code:
+      - deepseek-v4-pro
+      - gemini-3.8-flash
+      - qwen3.6-27b
+      general:
+      - gemini-3.5-flash-lite
+      - qwen3.6-27b
+      reasoning:
+      - gemini-4-argon
+      - deepseek-v4-pro
+      - qwen3.6-27b
+exception:
+  holmes:
+    models:
+    - deepseek-v4-pro
+    owner: platform team
+    why: 'same as kagent: root-cause analysis over cluster state and telemetry'
+  kagent:
+    models:
+    - deepseek-v4-pro
+    owner: platform team
+    why: multi-step tool calling the single-GPU local model can't carry; cluster state and telemetry only
+google_api:
+  speech:
+    host: eu-speech.googleapis.com
+    placement: gcp
+  tts:
+    host: eu-texttospeech.googleapis.com
+    placement: gcp
+  vertex-eu:
+    host: aiplatform.eu.rep.googleapis.com
+    placement: gcp
+  vertex-europe-west1:
+    host: europe-west1-aiplatform.googleapis.com
+    http1Only: true
+    placement: gcp
+model:
+  deepseek-v4-pro:
+    placement: external
+    price:
+      input: 0.66
+      output: 1.98
+    provider: Deepseek
+    secretRef: agentgateway-deepseek
+  gemini-3.5-flash:
+    placement: gcp
+    price:
+      input: 1.5
+      output: 9
+    provider: VertexAI
+    region: eu
+  gemini-3.5-flash-lite:
+    placement: gcp
+    price:
+      input: 0.3
+      output: 2.5
+    provider: VertexAI
+    region: eu
+  gemini-3.8-flash:
+    placement: gcp
+    price:
+      input: 0.75
+      output: 3.75
+    provider: VertexAI
+    region: eu
+  gemini-4-argon:
+    placement: gcp
+    price:
+      input: 2
+      output: 10
+    provider: VertexAI
+    region: eu
+  qwen3.6-27b:
+    deployment: model-prod/unsloth-qwen3-6-27b-nvfp4-ccdaab7e-e8eb38
+    placement: onprem
+    price:
+      input: 0
+      output: 0
+    provider: KServe
+    servedModel: unsloth/Qwen3.6-27B-NVFP4@ccdaab7e68af2409599b8949a8f2685703c9bae5
+project:
+  admin:
+    budget:
+      usd_per_30_days: 25
+    data_class: public
+    description: For people testing and operating the gateway by hand.
+    keys:
+    - admin
+    limits:
+      requests_per_minute: 60
+    mcp_tools:
+    - '*'
+    owner: platform team
+    project: admin
+    routing: semantic
+  holmes:
+    budget:
+      usd_per_30_days: 20
+    data_class: internal
+    description: HolmesGPT root-cause analysis. Its DeepSeek exception is in _exceptions.yaml.
+    keys: []
+    limits:
+      requests_per_minute: 30
+    mcp_tools:
+    - grafana_*
+    owner: platform team
+    project: holmes
+  kagent:
+    budget:
+      usd_per_30_days: 30
+    data_class: internal
+    description: kagent's agents. Its DeepSeek exception is in _exceptions.yaml.
+    keys:
+    - kagent
+    limits:
+      requests_per_minute: 60
+    mcp_tools:
+    - grafana_*
+    - kagent-tools_*
+    owner: platform team
+    project: kagent
+  model-onboarding:
+    data_class: internal
+    deployments: true
+    description: The model onboarding pipeline (github.com/nolimitkun/model-onboarding-pipeline). It tunes, evaluates and
+      smoke-tests each model deployment it makes through the gateway, by the deployment's own path, before the catalog names
+      it.
+    keys:
+    - model-onboarding
+    models:
+      allow:
+      - qwen3.6-27b
+    owner: platform team
+    placement:
+    - onprem
+    project: model-onboarding
+  open-webui:
+    budget:
+      usd_per_30_days: 50
+    data_class: internal
+    description: Open WebUI, the platform's chat front end for people.
+    keys:
+    - open-webui
+    limits:
+      requests_per_minute: 120
+    owner: platform team
+    project: open-webui
+    routing: semantic
+tool:
+  grafana_add_activity_to_incident:
+    fingerprint: e799d6e449740f82
+    risk: write
+  grafana_alerting_manage_routing:
+    fingerprint: 1d0e36719c42cce7
+    risk: write
+  grafana_alerting_manage_rules:
+    fingerprint: c6a0ccee9007952d
+    risk: irreversible
+  grafana_analyze_loki_labels:
+    fingerprint: d5c6fdf0819020fc
+    risk: read
+  grafana_check_datasources_health:
+    fingerprint: beb525a7287829e3
+    risk: read
+  grafana_create_annotation:
+    fingerprint: 6534a824451a084f
+    risk: write
+  grafana_create_datasource:
+    fingerprint: 4d3a1b18341e4b51
+    risk: write
+  grafana_create_folder:
+    fingerprint: edb6fc1e55f11e81
+    risk: write
+  grafana_create_incident:
+    fingerprint: 72ef6271d201d66b
+    risk: write
+  grafana_create_snapshot:
+    fingerprint: 614c062dfbc55dca
+    risk: write
+  grafana_delete_snapshot:
+    fingerprint: ed51cd6a0faf97a0
+    risk: irreversible
+  grafana_find_error_pattern_logs:
+    fingerprint: 52265a7550255096
+    risk: read
+  grafana_find_slow_requests:
+    fingerprint: 7cc36486eab2b922
+    risk: read
+  grafana_generate_deeplink:
+    fingerprint: 1ea03d6365ebcb01
+    risk: read
+  grafana_get_alert_group:
+    fingerprint: 4fefbce18d0f011c
+    risk: read
+  grafana_get_annotation_tags:
+    fingerprint: a3504a8753df9e6a
+    risk: read
+  grafana_get_annotations:
+    fingerprint: 838a558968a62ab4
+    risk: read
+  grafana_get_assertions:
+    fingerprint: 4a4e5dd75cef716f
+    risk: read
+  grafana_get_current_oncall_users:
+    fingerprint: 098fb4d4e1daf876
+    risk: read
+  grafana_get_dashboard_by_uid:
+    fingerprint: 5800994e10a4d68a
+    risk: read
+  grafana_get_dashboard_panel_queries:
+    fingerprint: 602124742284e349
+    risk: read
+  grafana_get_dashboard_property:
+    fingerprint: 2a8566c086f6c2f3
+    risk: read
+  grafana_get_dashboard_summary:
+    fingerprint: 04444e7074098657
+    risk: read
+  grafana_get_datasource:
+    fingerprint: cfa3e4d1f50d36fa
+    risk: read
+  grafana_get_incident:
+    fingerprint: 2a5ba55893e7dd15
+    risk: read
+  grafana_get_oncall_shift:
+    fingerprint: 56f42326c8b22581
+    risk: read
+  grafana_get_panel_image:
+    fingerprint: 896e84b0d6a40b5c
+    risk: read
+  grafana_get_plugin:
+    fingerprint: 98d0aa3c1dc9a3a9
+    risk: read
+  grafana_get_sift_analysis:
+    fingerprint: a177a1c67b9f58e7
+    risk: read
+  grafana_get_sift_investigation:
+    fingerprint: e5c739a63657cae0
+    risk: read
+  grafana_get_snapshot:
+    fingerprint: 04e576f96dcf131c
+    risk: read
+  grafana_grafana_api_request:
+    fingerprint: 5a20ca5cdb689d79
+    risk: irreversible
+  grafana_install_plugin:
+    fingerprint: 6fa774694fe0b19c
+    risk: write
+  grafana_list_alert_groups:
+    fingerprint: c1268baed867a959
+    risk: read
+  grafana_list_datasources:
+    fingerprint: baac68d5d88bfaa3
+    risk: read
+  grafana_list_incidents:
+    fingerprint: f2bf90d3378d67fb
+    risk: read
+  grafana_list_loki_label_names:
+    fingerprint: 1bff87b89f1a4049
+    risk: read
+  grafana_list_loki_label_values:
+    fingerprint: 131cc62e800c4e35
+    risk: read
+  grafana_list_oncall_schedules:
+    fingerprint: d620fffd76f75d6e
+    risk: read
+  grafana_list_oncall_teams:
+    fingerprint: 20ab207a5530035d
+    risk: read
+  grafana_list_oncall_users:
+    fingerprint: 540e2b0ea09fd8ef
+    risk: read
+  grafana_list_prometheus_label_names:
+    fingerprint: 60b2e7abfcbfa8a7
+    risk: read
+  grafana_list_prometheus_label_values:
+    fingerprint: 0e2639a0f9d91ac6
+    risk: read
+  grafana_list_prometheus_metric_metadata:
+    fingerprint: 3a994ea2f8c4fcd3
+    risk: read
+  grafana_list_prometheus_metric_names:
+    fingerprint: f7c98b1c258fd7cf
+    risk: read
+  grafana_list_provisioning_repositories:
+    fingerprint: e3670cdc3a262cb5
+    risk: read
+  grafana_list_pyroscope_label_names:
+    fingerprint: 6688130adbf8e99f
+    risk: read
+  grafana_list_pyroscope_label_values:
+    fingerprint: e6112b722efd0b80
+    risk: read
+  grafana_list_pyroscope_profile_types:
+    fingerprint: 9e63a20f8b89d74e
+    risk: read
+  grafana_list_sift_investigations:
+    fingerprint: 80525a0461080417
+    risk: read
+  grafana_list_snapshots:
+    fingerprint: c491b69ac9c39bf5
+    risk: read
+  grafana_query_loki_logs:
+    fingerprint: 643f03270b0b7951
+    risk: read
+  grafana_query_loki_patterns:
+    fingerprint: 4b8304f32493e0c9
+    risk: read
+  grafana_query_loki_stats:
+    fingerprint: 277a61c93141b1b0
+    risk: read
+  grafana_query_prometheus:
+    fingerprint: 03d12ff64fcbf091
+    risk: read
+  grafana_query_prometheus_histogram:
+    fingerprint: ed70cd8f66fa3f57
+    risk: read
+  grafana_query_pyroscope:
+    fingerprint: 4917e2d3cc6a166e
+    risk: read
+  grafana_search_dashboards:
+    fingerprint: a925cc41b697da56
+    risk: read
+  grafana_search_folders:
+    fingerprint: 33de46f561f3c4ce
+    risk: read
+  grafana_search_plugin_information:
+    fingerprint: 36d03445c19d266e
+    risk: read
+  grafana_suggest_loki_alloy_label_config:
+    fingerprint: f077c0397f14be8f
+    risk: read
+  grafana_update_annotation:
+    fingerprint: 1693c321a1aa88bd
+    risk: write
+  grafana_update_dashboard:
+    fingerprint: 986e020a8846522d
+    risk: write
+  grafana_update_datasource:
+    fingerprint: bf20ddd7c996f4ce
+    risk: write
+  grafana_validate_provisioning_file:
+    fingerprint: ddc321a903cfe54e
+    risk: read
+  kagent-tools_argo_check_plugin_logs:
+    fingerprint: 4c74df31349080f5
+    risk: read
+  kagent-tools_argo_pause_rollout:
+    fingerprint: d5ca9fc8e5b907c6
+    risk: write
+  kagent-tools_argo_promote_rollout:
+    fingerprint: 87deaba2fe7a3afc
+    risk: write
+  kagent-tools_argo_rollouts_list:
+    fingerprint: e53b03f5bd52d9a6
+    risk: read
+  kagent-tools_argo_set_rollout_image:
+    fingerprint: d2575d288109860c
+    risk: write
+  kagent-tools_argo_verify_argo_rollouts_controller_install:
+    fingerprint: 9c23f171ea5c8fd7
+    risk: read
+  kagent-tools_argo_verify_gateway_plugin:
+    fingerprint: 269ca3e746a2075a
+    risk: read
+  kagent-tools_argo_verify_kubectl_plugin_install:
+    fingerprint: 4647dac925753919
+    risk: read
+  kagent-tools_cilium_connect_to_remote_cluster:
+    fingerprint: 511f16d6bfa1d0e3
+    risk: write
+  kagent-tools_cilium_delete_key_from_kv_store:
+    fingerprint: f9fa7a22a97f13b7
+    risk: irreversible
+  kagent-tools_cilium_delete_pcap_recorder:
+    fingerprint: d5c4686521c37f3e
+    risk: irreversible
+  kagent-tools_cilium_delete_policy_rules:
+    fingerprint: c8514f61f88da385
+    risk: irreversible
+  kagent-tools_cilium_delete_service:
+    fingerprint: 675cf6412a73366c
+    risk: irreversible
+  kagent-tools_cilium_delete_xdp_cidr_filters:
+    fingerprint: eb5fc9e1fdf90bdd
+    risk: irreversible
+  kagent-tools_cilium_disconnect_endpoint:
+    fingerprint: ee8aef25b6449a1d
+    risk: write
+  kagent-tools_cilium_disconnect_remote_cluster:
+    fingerprint: 03fb5b3262421aba
+    risk: write
+  kagent-tools_cilium_display_encryption_state:
+    fingerprint: 9206594b0b33e621
+    risk: read
+  kagent-tools_cilium_display_policy_node_information:
+    fingerprint: 1eab8b52cb620211
+    risk: read
+  kagent-tools_cilium_display_selectors:
+    fingerprint: b161e973882c2288
+    risk: read
+  kagent-tools_cilium_flush_ipsec_state:
+    fingerprint: 61f79c5e0574c8cc
+    risk: irreversible
+  kagent-tools_cilium_fqdn_cache:
+    fingerprint: 77a64b066d4e6bc7
+    risk: read
+  kagent-tools_cilium_get_bpf_map:
+    fingerprint: adb520c555414b34
+    risk: read
+  kagent-tools_cilium_get_daemon_status:
+    fingerprint: a7579701fc93c571
+    risk: read
+  kagent-tools_cilium_get_endpoint_details:
+    fingerprint: b0dd7e08a076d482
+    risk: read
+  kagent-tools_cilium_get_endpoint_health:
+    fingerprint: 525a7475af97dc5f
+    risk: read
+  kagent-tools_cilium_get_endpoint_logs:
+    fingerprint: f8c0077b743dc3fc
+    risk: read
+  kagent-tools_cilium_get_endpoints_list:
+    fingerprint: 3271110dff5903fa
+    risk: read
+  kagent-tools_cilium_get_identity_details:
+    fingerprint: 2bff5aef0a82015a
+    risk: read
+  kagent-tools_cilium_get_kv_store_key:
+    fingerprint: 782b3237b3fa124a
+    risk: read
+  kagent-tools_cilium_get_pcap_recorder:
+    fingerprint: d35da169b084fe19
+    risk: read
+  kagent-tools_cilium_get_service_information:
+    fingerprint: b917ab974fb22fa8
+    risk: read
+  kagent-tools_cilium_install_cilium:
+    fingerprint: 93921e0c7808c8d5
+    risk: write
+  kagent-tools_cilium_list_bgp_peers:
+    fingerprint: 0f6d7bc802d01c8b
+    risk: read
+  kagent-tools_cilium_list_bgp_routes:
+    fingerprint: 42a60eb939f1fc09
+    risk: read
+  kagent-tools_cilium_list_bpf_map_events:
+    fingerprint: 594dc27df5011b52
+    risk: read
+  kagent-tools_cilium_list_bpf_maps:
+    fingerprint: 48486e76d9a28292
+    risk: read
+  kagent-tools_cilium_list_cluster_nodes:
+    fingerprint: 4ab9f873723f0494
+    risk: read
+  kagent-tools_cilium_list_envoy_config:
+    fingerprint: 27f47a5194cd0d3f
+    risk: read
+  kagent-tools_cilium_list_identities:
+    fingerprint: 7ee418bc3e38fad3
+    risk: read
+  kagent-tools_cilium_list_ip_addresses:
+    fingerprint: a3e4b383a009e324
+    risk: read
+  kagent-tools_cilium_list_local_redirect_policies:
+    fingerprint: 42bfd3e851a25b09
+    risk: read
+  kagent-tools_cilium_list_metrics:
+    fingerprint: 8dc2e7cd883c4979
+    risk: read
+  kagent-tools_cilium_list_node_ids:
+    fingerprint: 5e449808d457fe70
+    risk: read
+  kagent-tools_cilium_list_pcap_recorders:
+    fingerprint: 33922bc27d50a14e
+    risk: read
+  kagent-tools_cilium_list_services:
+    fingerprint: 3495a80405cdac6f
+    risk: read
+  kagent-tools_cilium_list_xdp_cidr_filters:
+    fingerprint: 271ca21f67fc7764
+    risk: read
+  kagent-tools_cilium_manage_endpoint_config:
+    fingerprint: d00d11d17db097d5
+    risk: write
+  kagent-tools_cilium_manage_endpoint_labels:
+    fingerprint: 66a92f8a3d5bdb1c
+    risk: write
+  kagent-tools_cilium_request_debugging_information:
+    fingerprint: 28f74a34a13de1b5
+    risk: write
+  kagent-tools_cilium_set_kv_store_key:
+    fingerprint: b53adac7639113bc
+    risk: write
+  kagent-tools_cilium_show_cluster_mesh_status:
+    fingerprint: 82c3cd4e970ea1d9
+    risk: read
+  kagent-tools_cilium_show_configuration_options:
+    fingerprint: 66771eb811d6cb8d
+    risk: read
+  kagent-tools_cilium_show_dns_names:
+    fingerprint: 857a8838b2b56cf6
+    risk: read
+  kagent-tools_cilium_show_features_status:
+    fingerprint: 26a2a8e6f7a7f646
+    risk: read
+  kagent-tools_cilium_show_ip_cache_information:
+    fingerprint: e5d05c10cafbfeee
+    risk: read
+  kagent-tools_cilium_show_load_information:
+    fingerprint: 23da7b5cb1b29fe7
+    risk: read
+  kagent-tools_cilium_status_and_version:
+    fingerprint: 1121c678fcca1623
+    risk: read
+  kagent-tools_cilium_toggle_cluster_mesh:
+    fingerprint: f2b33c081822f4e9
+    risk: write
+  kagent-tools_cilium_toggle_configuration_option:
+    fingerprint: 5f3a9b69326a7478
+    risk: write
+  kagent-tools_cilium_toggle_hubble:
+    fingerprint: 746fe9887f1b2fde
+    risk: write
+  kagent-tools_cilium_uninstall_cilium:
+    fingerprint: 2fe551d8c72661b9
+    risk: irreversible
+  kagent-tools_cilium_update_pcap_recorder:
+    fingerprint: c35b5f0175d7f5ef
+    risk: write
+  kagent-tools_cilium_update_service:
+    fingerprint: 376b3163a24bb160
+    risk: write
+  kagent-tools_cilium_update_xdp_cidr_filters:
+    fingerprint: fe8cdbcf08dcebca
+    risk: write
+  kagent-tools_cilium_upgrade_cilium:
+    fingerprint: fcd5a2f68eedf6d2
+    risk: write
+  kagent-tools_cilium_validate_cilium_network_policies:
+    fingerprint: d73e84e7b16d0819
+    risk: read
+  kagent-tools_datetime_get_current_time:
+    fingerprint: f0d725fc11257dd5
+    risk: read
+  kagent-tools_helm_get_release:
+    fingerprint: 30d75840c5e25ddc
+    risk: read
+  kagent-tools_helm_list_releases:
+    fingerprint: c3e919039e8a4fe4
+    risk: read
+  kagent-tools_helm_repo_add:
+    fingerprint: 6d6f07c9e497ed81
+    risk: write
+  kagent-tools_helm_repo_update:
+    fingerprint: 35704be7bd5a6782
+    risk: write
+  kagent-tools_helm_uninstall:
+    fingerprint: dd922732a6413181
+    risk: irreversible
+  kagent-tools_helm_upgrade:
+    fingerprint: b553674b5f7d038d
+    risk: write
+  kagent-tools_istio_analyze_cluster_configuration:
+    fingerprint: 807396835ea7cfe4
+    risk: read
+  kagent-tools_istio_apply_waypoint:
+    fingerprint: cde51f1bd16ce14b
+    risk: write
+  kagent-tools_istio_delete_waypoint:
+    fingerprint: 96cb2778f2302957
+    risk: irreversible
+  kagent-tools_istio_generate_manifest:
+    fingerprint: d224a11a84b1c2c5
+    risk: read
+  kagent-tools_istio_generate_waypoint:
+    fingerprint: 165f1c9983e062d0
+    risk: read
+  kagent-tools_istio_install_istio:
+    fingerprint: cbd6bfc2c3118592
+    risk: write
+  kagent-tools_istio_list_waypoints:
+    fingerprint: d74a8d470145e2bc
+    risk: read
+  kagent-tools_istio_proxy_config:
+    fingerprint: 2694700683fcf3c6
+    risk: read
+  kagent-tools_istio_proxy_status:
+    fingerprint: bfab974a7395b91d
+    risk: read
+  kagent-tools_istio_remote_clusters:
+    fingerprint: 4ed8dcf350bd0ff7
+    risk: read
+  kagent-tools_istio_version:
+    fingerprint: c11022826b9d3f01
+    risk: read
+  kagent-tools_istio_waypoint_status:
+    fingerprint: 5cfa768bac2072c7
+    risk: read
+  kagent-tools_istio_ztunnel_config:
+    fingerprint: 2c39b6223d02b1f5
+    risk: read
+  kagent-tools_k8s_annotate_resource:
+    fingerprint: 6f688319741a2eb3
+    risk: write
+  kagent-tools_k8s_apply_manifest:
+    fingerprint: 8fc6589582382d1f
+    risk: write
+  kagent-tools_k8s_check_service_connectivity:
+    fingerprint: f88a975bc0f64ee7
+    risk: write
+  kagent-tools_k8s_create_resource:
+    fingerprint: 79b0a51e56cb195c
+    risk: write
+  kagent-tools_k8s_create_resource_from_url:
+    fingerprint: d261a494634532d8
+    risk: write
+  kagent-tools_k8s_delete_resource:
+    fingerprint: 1b3f18e4d402f6af
+    risk: irreversible
+  kagent-tools_k8s_describe_resource:
+    fingerprint: 52f909aaa7d553ce
+    risk: read
+  kagent-tools_k8s_execute_command:
+    fingerprint: 1e6d862c33e58569
+    risk: irreversible
+  kagent-tools_k8s_generate_resource:
+    fingerprint: 696addbf6e4b5ec3
+    risk: read
+  kagent-tools_k8s_get_available_api_resources:
+    fingerprint: 3885f76b734bdf40
+    risk: read
+  kagent-tools_k8s_get_cluster_configuration:
+    fingerprint: 604a0f3449b2a791
+    risk: read
+  kagent-tools_k8s_get_events:
+    fingerprint: 5c73487059dd6fe7
+    risk: read
+  kagent-tools_k8s_get_pod_logs:
+    fingerprint: 0de73d16dd30d827
+    risk: read
+  kagent-tools_k8s_get_resource_yaml:
+    fingerprint: 86dae51449f96a51
+    risk: read
+  kagent-tools_k8s_get_resources:
+    fingerprint: 332a07f557bfec2f
+    risk: read
+  kagent-tools_k8s_label_resource:
+    fingerprint: 1a08e7c0c9fdac35
+    risk: write
+  kagent-tools_k8s_patch_resource:
+    fingerprint: 19a3f37dbaaee2b4
+    risk: write
+  kagent-tools_k8s_patch_status:
+    fingerprint: 359f7ed916c9c2f3
+    risk: write
+  kagent-tools_k8s_remove_annotation:
+    fingerprint: 9167015c6bc7c29d
+    risk: write
+  kagent-tools_k8s_remove_label:
+    fingerprint: b15af5b5232fcd62
+    risk: write
+  kagent-tools_k8s_rollout:
+    fingerprint: e05c3b405e87c916
+    risk: write
+  kagent-tools_k8s_scale:
+    fingerprint: beb88b1d01ab98e7
+    risk: write
+  kagent-tools_kubescape_check_health:
+    fingerprint: 51b1268dcda0665a
+    risk: read
+  kagent-tools_kubescape_get_application_profile:
+    fingerprint: 5e2d3d66f464157f
+    risk: read
+  kagent-tools_kubescape_get_configuration_scan:
+    fingerprint: a77591c30cfcc17f
+    risk: read
+  kagent-tools_kubescape_get_network_neighborhood:
+    fingerprint: 974512d93c7d0df0
+    risk: read
+  kagent-tools_kubescape_get_vulnerability_details:
+    fingerprint: e9baea3bab656d96
+    risk: read
+  kagent-tools_kubescape_list_application_profiles:
+    fingerprint: e5926e46e65f096f
+    risk: read
+  kagent-tools_kubescape_list_configuration_scans:
+    fingerprint: ef06958661e679b9
+    risk: read
+  kagent-tools_kubescape_list_network_neighborhoods:
+    fingerprint: 2cc08f966c9a5b2a
+    risk: read
+  kagent-tools_kubescape_list_vulnerabilities:
+    fingerprint: b2b9989ded47d15b
+    risk: read
+  kagent-tools_kubescape_list_vulnerability_manifests:
+    fingerprint: 38a76974e079af4b
+    risk: read
+  kagent-tools_prometheus_label_names_tool:
+    fingerprint: 237bc6aa76a8661b
+    risk: read
+  kagent-tools_prometheus_promql_tool:
+    fingerprint: 39fc679ce5640930
+    risk: read
+  kagent-tools_prometheus_query_range_tool:
+    fingerprint: fdd199f187226bd1
+    risk: read
+  kagent-tools_prometheus_query_tool:
+    fingerprint: e042368fd7767df8
+    risk: read
+  kagent-tools_prometheus_targets_tool:
+    fingerprint: fa86018b944fae60
+    risk: read
+  kagent-tools_shell:
+    fingerprint: a988eee4a8fb27d0
+    risk: irreversible
+setting:
+  data_classes:
+    restricted: [onprem]
+    confidential: [onprem]
+    internal: [onprem, gcp]
+    public: [onprem, gcp, external]
+  autonomy:
+    read-only: [read]
+    supervised: [read]
+    autonomous: [read, write]
+  approvals:
+    project.create: [security]
+    project.limit_raised: [cost_owner]
+    project.budget_raised: [cost_owner]
+    project.data_class_changed: [security]
+    project.placement_widened: [security]
+    mcp_tools.wildcard_added: [security]
+    exception.set: [security]
+    agent.create_beyond_read_only: [security]
+    agent.autonomy_raised: [security]
+    catalog.route_changed: [security]
+    model.price_changed: [cost_owner]
+    tool.risk_lowered: [security]
+    catalog.access_changed: [security]

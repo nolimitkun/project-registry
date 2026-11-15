@@ -1,0 +1,12 @@
+__pycache__/
+# Records are the project registry's; a local render writes these. Never commit them.
+/projects/*.yaml
+/agents/*.yaml
+/policies/gateway-projects/projects/
+/policies/gateway-projects/exceptions/
+/policies/gateway-projects/agents/
+/generated/agentregistry-agents.yaml
+/catalog/*.yaml
+/generated/
+/policies/gateway-projects/registry/
+/settings/*.yaml

@@ -1,0 +1,15 @@
+# Set by the deployment repo (the gateway's settings), not here:
+gatewayName: agentgateway-proxy
+gcp:
+  project: ""
+kserve:
+  servingKeySecret: model-serving-key
+auto:
+  enabled: true
+  opaService: opa
+  opaPort: 8181
+  cacheTTL: ""
+
+# Set by the project registry when it packages the chart: its catalog records, as
+# scripts/gen-catalog.py renders them (generated/agentgateway-catalog.yaml).
+catalog: {}
