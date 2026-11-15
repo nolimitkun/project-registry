@@ -98,13 +98,41 @@ class PolicySource:
         fa, fb = self.files(a), self.files(b)
         return {p for p in fa.keys() | fb.keys() if fa.get(p) != fb.get(p)}
 
-    def test(self, sha: str, data: Path) -> None:
+    def test(self, sha: str, data: Path) -> str:
         """opa test over the commit's policy with project data (the registry's records rendered
-        at the commit: Git has no copy of them). Rejected if a test fails."""
+        at the commit: Git has no copy of them). Rejected if a test fails; else its summary
+        ("PASS: 84/84"), for the approvers."""
         work = self.renderer.checkout(sha)
         test = subprocess.run([self.opa, "test", self.policy_dir, str(data)], cwd=work, capture_output=True, text=True)
         if test.returncode != 0:
             raise Rejected(f"opa test failed at {sha[:12]}:\n{(test.stdout + test.stderr)[-3000:]}")
+        return (test.stdout.strip().splitlines() or [""])[-1]
+
+    def diff(self, a: str, b: str, limit: int = 200_000) -> dict:
+        """The files that differ between two commits, each with a unified diff (text files),
+        for the approvers in the portal. Diffs stop after `limit` characters in all."""
+        import difflib
+        wa, wb = self.renderer.checkout(a), self.renderer.checkout(b)
+        files, used = [], 0
+        for path in sorted(self.changed(a, b)):
+            # a file on one side may be a directory (or nothing) on the other: absent there
+            pa, pb = wa / path, wb / path
+            status = "added" if not pa.is_file() else "removed" if not pb.is_file() else "changed"
+            entry = {"path": path, "status": status, "inert": inert(path)}
+            try:
+                old = pa.read_text().splitlines(keepends=True) if pa.is_file() else []
+                new = pb.read_text().splitlines(keepends=True) if pb.is_file() else []
+            except UnicodeDecodeError:
+                entry["binary"] = True
+                files.append(entry)
+                continue
+            text = "".join(difflib.unified_diff(old, new, f"a/{path}", f"b/{path}"))
+            if used + len(text) > limit:
+                entry["truncated"] = True
+            else:
+                entry["diff"], used = text, used + len(text)
+            files.append(entry)
+        return {"from": a, "to": b, "files": files}
 
     def build(self, sha: str, signer, out: Path) -> None:
         """The commit's signed policy bundle, into out. Not tested here: a commit is tested
@@ -277,14 +305,14 @@ class PolicyWatch:
                 new_data = self.renderer.render(records, sha, tmp / "gateway-projects")
             except RenderError as e:
                 raise Rejected(f"the registry's records don't render at {sha[:12]}: {e}") from e
-            self.source.test(sha, new_data)
+            tests = self.source.test(sha, new_data)
             new_policy = self.ensure_built(sha, tmp)
             old_policy = self.store.fetch(self.policy_bundle, active, tmp / "old-policy.tar.gz")
             data_rev = self.store.active(self.data_bundle)
             if not data_rev:
                 raise RuntimeError(f"no active {self.data_bundle} bundle (run the import)")
             old_data = self.store.fetch(self.data_bundle, data_rev, tmp / "old-data.tar.gz")
-            report = {"policy_revision": active, "data_revision": data_rev}
+            report = {"policy_revision": active, "data_revision": data_rev, "tests": tests}
             if (all(inert(p) for p in self.source.changed(active, sha))
                     and same_bundle(new_policy, old_policy) and same_data(new_data, old_data)):
                 # only inert files changed, and nothing OPA loads

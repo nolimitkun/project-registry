@@ -52,9 +52,10 @@ def world(tmp_path, monkeypatch):
     store.activate("gateway-policy", policy_rev)
     signer = bundles.LocalKeySigner(rsa.generate_private_key(public_exponent=65537, key_size=2048), "opa-bundles")
     renderer = render.Renderer(REPO, tmp_path / "checkouts")
-    # the catalog: a seed carries it, like the deployment's (the policy's test fixture)
+    # the catalog and the settings: a seed carries them, like the deployment's (the policy's
+    # test fixture)
     fixture = yaml.safe_load((renderer.checkout(policy_rev) / "fixtures" / "records.yaml").read_text())
-    for kind in dbm.CATALOG_KINDS:
+    for kind in dbm.CATALOG_KINDS + dbm.SETTING_KINDS:
         monkeypatch.setitem(SEED, kind, fixture.get(kind) or {})
     roles = {"value": ["project_owner"], "may_submit": True, "asked": []}
 
@@ -498,3 +499,32 @@ def test_a_signing_failure_fails_the_change_and_reaches_health(world, monkeypatc
         assert c.execute("select state from change_request where id = %s", (ch["id"],)).fetchone()["state"] == "failed"
         row = c.execute("select last_success, last_error from publisher_health where output = 'data'").fetchone()
     assert row["last_success"] is None and "permission denied" in row["last_error"]
+
+
+def test_a_setting_is_changed_by_request_into_the_data_bundle(world):
+    import json
+    import tarfile
+    import tempfile
+    db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
+    rev = store.active("gateway-policy")
+    if not (world["renderer"].checkout(rev) / "scripts" / "gen-settings.py").exists():
+        pytest.skip("the policy repo has no settings yet")
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    roles["value"] = ["platform", "security"]
+    with pytest.raises(HTTPException) as e:                                   # gen-settings.py validates it
+        reg.submit(ALICE, "setting", "autonomy", "update", api.ChangeIn(spec={"supervised": ["read", "fly"]}))
+    assert e.value.status_code == 422
+    ch = reg.submit(ALICE, "setting", "autonomy", "update", api.ChangeIn(spec={"supervised": ["read", "write"]}))
+    reg.decide(BOB, ch["id"], "approve", None)
+    reg.decide(SEC, ch["id"], "approve", None)
+    data = pub.publish_once()
+    assert data and store.active("gateway-projects") == data
+    with tempfile.TemporaryDirectory() as tmp:
+        with tarfile.open(store.fetch("gateway-projects", data, Path(tmp) / "b.tar.gz")) as tar:
+            merged = json.loads(tar.extractfile(next(m for m in tar.getmembers() if m.name.endswith("data.json"))).read())
+    assert merged["registry"]["settings"]["autonomy"]["supervised"] == ["read", "write"]
+
+
+def test_a_setting_change_may_change_any_project():
+    from registry.publisher import Everyone, projects_touched
+    assert isinstance(projects_touched({"kind": "setting", "object_id": "approvals", "before": {}, "after": {}}), Everyone)
