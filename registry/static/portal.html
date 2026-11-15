@@ -15,9 +15,11 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
-  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  nav button { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
+  nav { display: flex; flex-wrap: wrap; }
+  .me { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+  nav button { background: none; border: 0; padding: 6px 7px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; font-size: 13px; }
   nav button.active { background: var(--chip); color: var(--text); }
   .spacer { flex: 1; }
   main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
@@ -81,8 +83,8 @@
     <button data-view="status">Status</button>
   </nav>
   <span class="spacer"></span>
-  <span id="who" class="muted"></span>
-  <button id="logout" class="action" hidden>Log out</button>
+  <span class="me"><span id="who" class="muted"></span>
+  <button id="logout" class="action" hidden>Log out</button></span>
 </header>
 <main id="main"></main>
 
@@ -799,11 +801,13 @@ function filterInput(tableEl, placeholder = "filter") {
   return i;
 }
 
-// rows: a function, called on click, of arrays of plain values. A cell that a spreadsheet
-// would run as a formula (= + - @ first) is quoted as text.
+// rows: a function, called on click, of arrays of plain values. A text cell that a
+// spreadsheet would run as a formula (= + - @ first) is quoted as text; numbers stay numbers.
 function csvButton(name, heads, rows) {
   const cell = (v) => {
-    v = v === null || v === undefined ? "" : String(v);
+    if (v === null || v === undefined) return "";
+    if (typeof v === "number") return String(v);
+    v = String(v);
     if (/^[=+\-@\t\r]/.test(v)) v = "'" + v;
     return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
   };
@@ -889,7 +893,7 @@ function show_nav(view) { for (const b of document.querySelectorAll("nav button"
       return;
     }
     me = await api("GET", "/me");
-    document.getElementById("who").textContent = `${me.name} · ${me.groups.join(", ")}`;
+    const who = document.getElementById("who"); who.textContent = me.name; who.title = me.groups.join(", ");
     document.getElementById("nav").hidden = false;
     // the audit log is for the approver groups (GET /audit answers 403 to anyone else)
     document.getElementById("nav-audit").hidden = !["platform-admins", "security-reviewers", "cost-owners"].some((g) => me.groups.includes(g));
