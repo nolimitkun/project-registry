@@ -614,7 +614,8 @@ week of shadow running:
     buttons to act on them;
   - publications of both bundles, with rollback.
 - **The budget metric** `project_budget_usd` and one budget alert rule for all
-  projects.
+  projects; the catalog price metric `model_price_usd_per_million_tokens` and
+  one price drift alert for all models.
 - **Copies of the records**: a daily snapshot into the bundle store (the
   CronJob `project-registry-snapshot`). It replaced a daily export to Git as a
   pull request, and the GitHub token that came with it.
