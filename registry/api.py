@@ -46,6 +46,12 @@ class ChangeIn(BaseModel):
     comment: str | None = None
 
 
+class PreviewIn(ChangeIn):
+    collection: str                      # projects, agents, settings, ...
+    object_id: str
+    op: str = "update"                   # create, update, delete
+
+
 class Decision(BaseModel):
     comment: str | None = None
 
@@ -101,54 +107,77 @@ class Registry:
             roles.add("project_owner")
         return roles
 
+    def yours(self, c, user: User, change: dict, approvals: list[dict]) -> list[str]:
+        """The open approvals of a pending change this user may give now: none for its author
+        (four eyes) or once they have decided."""
+        if change["state"] != "pending_approval" or change["created_by"] == user.name:
+            return []
+        if any(a["approver"] == user.name for a in approvals):
+            return []
+        done = {a["role"] for a in approvals if a["decision"] == "approve"}
+        mine = self.roles_of(c, user, change)
+        return [r for r in change["required_approvals"] if r not in done and r in mine]
+
     # --- changes ---
+    def check(self, c, user: User, kind: str, oid: str, op: str, body: ChangeIn) -> tuple[dict, str | None, list[str]]:
+        """Everything a submit checks, without filing it: the change, its owner group and who
+        must approve it. Raises what a submit would."""
+        row = c.execute("select spec from resource where kind = %s and id = %s", (kind, oid)).fetchone()
+        before = row["spec"] if row else None
+        if op == "create":
+            if before is not None:
+                raise HTTPException(409, f"{kind} {oid} exists")
+            if kind == "project" and not body.owner_group:
+                raise HTTPException(422, "a new project needs owner_group")
+            after = body.spec
+        elif before is None:
+            raise HTTPException(404, f"no {kind} {oid}")
+        else:
+            after = None if op == "delete" else merge(before, body.spec or {})
+        if after == before:
+            raise HTTPException(422, "the change changes nothing")
+        pending = c.execute("select id from change_request where kind = %s and object_id = %s and "
+                            "state in ('pending_approval', 'approved', 'publishing')", (kind, oid)).fetchone()
+        if pending:
+            raise HTTPException(409, f"change {pending['id']} for {kind} {oid} is not finished yet")
+        records = dbm.resources(c)
+        if after is None:
+            records[kind].pop(oid, None)
+        else:
+            records[kind][oid] = after
+        policy_rev = self.store.active(self.policy_bundle)
+        if not policy_rev:
+            raise HTTPException(503, "no active policy bundle to validate against")
+        # A proposed agent is also checked against the deployment repo's kagent wiring.
+        # Only here: a publish never fails over wiring changed since.
+        wiring = None
+        if self.kagent_wiring and kind == "agent" and after:
+            try:
+                wiring = self.kagent_wiring.env()
+            except (OSError, subprocess.CalledProcessError) as e:
+                raise HTTPException(503, f"can't read the deployment repo's kagent wiring: {e}") from e
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                self.renderer.render(records, policy_rev, Path(tmp) / "out", env=wiring)
+            except RenderError as e:
+                raise HTTPException(422, {"errors": e.errors}) from e
+        change = {"kind": kind, "object_id": oid, "op": op, "before": before, "after": after}
+        owner = body.owner_group if (kind == "project" and op == "create") else \
+            self.owner_group(c, kind, oid, after or before)
+        if not self.may_submit(change, user, owner):
+            raise HTTPException(403, f"you may not propose changes to {kind} {oid}")
+        return change, owner, self.required_approvals(change, user.name)
+
+    def preview(self, user: User, kind: str, oid: str, op: str, body: ChangeIn) -> dict:
+        """What a submit would file, without filing it: who must approve, and what changes."""
+        with self.db.tx() as c:
+            change, owner, required = self.check(c, user, kind, oid, op, body)
+        return {**change, "owner_group": owner, "required_approvals": required}
+
     def submit(self, user: User, kind: str, oid: str, op: str, body: ChangeIn) -> dict:
         with self.db.tx() as c:
-            row = c.execute("select spec from resource where kind = %s and id = %s", (kind, oid)).fetchone()
-            before = row["spec"] if row else None
-            if op == "create":
-                if before is not None:
-                    raise HTTPException(409, f"{kind} {oid} exists")
-                if kind == "project" and not body.owner_group:
-                    raise HTTPException(422, "a new project needs owner_group")
-                after = body.spec
-            elif before is None:
-                raise HTTPException(404, f"no {kind} {oid}")
-            else:
-                after = None if op == "delete" else merge(before, body.spec or {})
-            if after == before:
-                raise HTTPException(422, "the change changes nothing")
-            pending = c.execute("select id from change_request where kind = %s and object_id = %s and "
-                                "state in ('pending_approval', 'approved', 'publishing')", (kind, oid)).fetchone()
-            if pending:
-                raise HTTPException(409, f"change {pending['id']} for {kind} {oid} is not finished yet")
-            records = dbm.resources(c)
-            if after is None:
-                records[kind].pop(oid, None)
-            else:
-                records[kind][oid] = after
-            policy_rev = self.store.active(self.policy_bundle)
-            if not policy_rev:
-                raise HTTPException(503, "no active policy bundle to validate against")
-            # A proposed agent is also checked against the deployment repo's kagent wiring.
-            # Only here: a publish never fails over wiring changed since.
-            wiring = None
-            if self.kagent_wiring and kind == "agent" and after:
-                try:
-                    wiring = self.kagent_wiring.env()
-                except (OSError, subprocess.CalledProcessError) as e:
-                    raise HTTPException(503, f"can't read the deployment repo's kagent wiring: {e}") from e
-            with tempfile.TemporaryDirectory() as tmp:
-                try:
-                    self.renderer.render(records, policy_rev, Path(tmp) / "out", env=wiring)
-                except RenderError as e:
-                    raise HTTPException(422, {"errors": e.errors}) from e
-            change = {"kind": kind, "object_id": oid, "op": op, "before": before, "after": after}
-            owner = body.owner_group if (kind == "project" and op == "create") else \
-                self.owner_group(c, kind, oid, after or before)
-            if not self.may_submit(change, user, owner):
-                raise HTTPException(403, f"you may not propose changes to {kind} {oid}")
-            required = self.required_approvals(change, user.name)
+            change, _, required = self.check(c, user, kind, oid, op, body)
+            before, after = change["before"], change["after"]
             row = c.execute("""insert into change_request (kind, object_id, op, before, after, state,
                                    required_approvals, created_by)
                                values (%s, %s, %s, %s, %s, 'pending_approval', %s, %s) returning *""",
@@ -325,10 +354,15 @@ def create_app(reg: Registry) -> FastAPI:
 
     @app.get("/changes")
     def list_changes(state: str | None = None, object_id: str | None = None, limit: int = 50,
-                     user: User = Depends(current_user)):
-        """Change requests, newest first, with their approvals; state=open for the ones still
-        waiting (pending_approval, approved, publishing)."""
+                     awaiting: str | None = None, user: User = Depends(current_user)):
+        """Change requests, newest first, with their approvals and `yours`: the open approvals
+        the caller may give. state=open for the ones still waiting (pending_approval,
+        approved, publishing); awaiting=me for the ones waiting for the caller."""
         states = {"open": ["pending_approval", "approved", "publishing"]}.get(state, [state] if state else None)
+        if awaiting not in (None, "me"):
+            raise HTTPException(422, "awaiting takes only me")
+        if awaiting:
+            states, limit = ["pending_approval"], 500
         with reg.db.tx() as c:
             rows = c.execute("""select id, kind, object_id, op, state, required_approvals, bundle_revision,
                                      error, created_by, created_at, updated_at, before, after
@@ -342,9 +376,18 @@ def create_app(reg: Registry) -> FastAPI:
             for a in c.execute("select change_id, approver, role, decision, comment, at from approval "
                                "where change_id = any(%s) order by at", (ids,)):
                 approvals.setdefault(a["change_id"], []).append(a)
-        for r in rows:
-            r["approvals"] = approvals.get(r["id"], [])
-        return rows
+            for r in rows:
+                r["approvals"] = approvals.get(r["id"], [])
+                r["yours"] = reg.yours(c, user, r, r["approvals"])
+        return [r for r in rows if r["yours"]] if awaiting else rows
+
+    @app.post("/changes/preview")
+    def preview_change(body: PreviewIn, user: User = Depends(current_user)):
+        """What submitting this change would file, without filing it: it is validated as a
+        submit is, and the answer says who must approve it."""
+        if body.op not in ("create", "update", "delete"):
+            raise HTTPException(422, f"no op {body.op}")
+        return reg.preview(user, kind_of(body.collection), body.object_id, body.op, body)
 
     @app.get("/me")
     def me(user: User = Depends(current_user)):
@@ -359,6 +402,7 @@ def create_app(reg: Registry) -> FastAPI:
                 raise HTTPException(404)
             ch["approvals"] = c.execute("select approver, role, decision, comment, at from approval "
                                         "where change_id = %s order by at", (change_id,)).fetchall()
+            ch["yours"] = reg.yours(c, user, ch, ch["approvals"])
         return ch
 
     @app.get("/changes/{change_id}/diff")
