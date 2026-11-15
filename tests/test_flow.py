@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from registry import api, bundles, db as dbm, importer, publisher, render
 from registry.auth import User
 from tests.test_bundles import OPA, FakeS3
+from tests import test_usage
 
 DSN = os.environ.get("TEST_DATABASE_URL")
 # The platform's own projects, as the project-registry chart seeds a new cluster with
@@ -576,3 +577,46 @@ def test_a_chart_asks_argo_cd_to_refresh_its_application(tmp_path, monkeypatch):
         raise argo.requests.ConnectionError("no route")
     monkeypatch.setattr(argo.requests, "patch", refused)
     assert argo.refresh("argocd/x", sa=tmp_path) is False                     # never raises
+
+
+def test_the_usage_page_shows_each_caller_the_projects_it_may_see(world):
+    from fastapi.testclient import TestClient
+
+    from registry import usage
+    db, reg = world["db"], world["reg"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    app = api.create_app(reg)
+    client = TestClient(app)
+    app.dependency_overrides[api.current_user] = lambda: COST
+    assert client.get("/usage").status_code == 404                  # not configured
+
+    with db.tx() as c:
+        c.execute("update project_owner set owner_group = 'webui-owners' where project_id = 'open-webui'")
+        records = dbm.resources(c)
+        owners = {r["project_id"]: r["owner_group"] for r in c.execute("select * from project_owner").fetchall()}
+    reg.usage = usage.Reader(usage.Bucket(test_usage.FakeS3(), "usage"))
+    usage.run(reg.usage.bucket, test_usage.loki([test_usage.CLOUD, test_usage.KSERVE, test_usage.AUTO, test_usage.DENIED]),
+              records, owners, now=test_usage.NOW, backfill=3)
+    day = {"start": "2026-11-01", "end": "2026-11-15"}
+
+    r = client.get("/usage", params=day).json()                     # the cost owners see every project
+    assert {p["project"] for p in r["by_project"]} == {"admin", "kagent", "open-webui"}
+    assert r["totals"]["requests"] == 3 and r["totals"]["denied"] == 1
+    admin = next(p for p in r["by_project"] if p["project"] == "admin")
+    assert admin["budget_usd_30d"] == 25 and admin["cost_30d"] == pytest.approx(0.00025485)
+    assert r["onprem"]["output_tokens"] == 18 and r["onprem"]["reference_usd"] > 0     # Qwen at Gemini 3.5 Flash's price
+    assert {(m["model"], m["via_auto"]) for m in r["by_model"]} >= {("gemini-3.5-flash-lite", 1), ("qwen3.6-27b", 0)}
+    assert r["through"] == "2026-11-15T12:00:00+00:00"
+
+    app.dependency_overrides[api.current_user] = lambda: User("wendy", {"webui-owners"})
+    r = client.get("/usage", params=day).json()                     # an owner: only its projects
+    assert r["projects"] == ["open-webui"] and [p["project"] for p in r["by_project"]] == ["open-webui"]
+    assert r["totals"]["denied"] == 1 and r["totals"]["cost_usd"] == 0
+    assert client.get("/usage", params={**day, "project": "admin"}).status_code == 403
+    assert client.get("/usage/requests", params={"project": "admin", "date": "2026-11-15"}).status_code == 403
+    [req] = client.get("/usage/requests", params={"project": "open-webui", "date": "2026-11-15"}).json()
+    assert (req["outcome"], req["status"], req["trace_id"]) == ("denied", 403, "t4")
+
+    app.dependency_overrides[api.current_user] = lambda: User("nobody", {"someone-else"})
+    assert client.get("/usage", params=day).json()["by_project"] == []
+    assert client.get("/usage", params={"start": "2026-11-15", "end": "2026-11-01"}).status_code == 422

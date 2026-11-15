@@ -42,6 +42,14 @@
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
   .login { text-align: center; padding: 60px 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .tile .label { color: var(--muted); font-size: 12px; } .tile .value { font-size: 22px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .meter { display: inline-block; width: 80px; height: 8px; border-radius: 4px; background: var(--chip); vertical-align: middle; margin-right: 6px; overflow: hidden; }
+  .meter span { display: block; height: 100%; background: var(--ok); } .meter span.warn { background: var(--warn); } .meter span.bad { background: var(--bad); }
+  svg.bars rect { fill: var(--accent); } svg.bars text { fill: var(--muted); font-size: 10px; }
+  select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
 </style>
 </head>
 <body>
@@ -52,6 +60,7 @@
     <button data-view="settings">Settings</button>
     <button data-view="changes">Changes</button>
     <button data-view="publications">Publications</button>
+    <button data-view="usage">Usage</button>
   </nav>
   <span class="spacer"></span>
   <span id="who" class="muted"></span>
@@ -144,7 +153,7 @@ function describe(detail) {
 
 // --- views ---
 let me = null;
-const views = { projects: viewProjects, settings: viewSettings, changes: viewChanges, publications: viewPublications };
+const views = { projects: viewProjects, settings: viewSettings, changes: viewChanges, publications: viewPublications, usage: viewUsage };
 function show(view, arg) {
   for (const b of document.querySelectorAll("nav button")) b.classList.toggle("active", b.dataset.view === view);
   $main.replaceChildren(el("p", { class: "muted" }, "Loading…"));
@@ -340,6 +349,103 @@ async function viewPublications() {
         el("td", {}, isPlatform && p.state !== "active" ? el("button", { class: "action danger", onclick: rollback(p.revision) }, "Roll back to this") : null))))),
     msg));
 }
+// --- usage: the gateway's spend and usage (usage.py), hourly from its access log ---
+const usd = (v) => { v = Number(v || 0); return v === 0 ? "$0" : v >= 1 ? `$${v.toFixed(2)}` : v >= 0.01 ? `$${v.toFixed(3)}` : `$${v.toFixed(5)}`; };
+const count = (v) => Number(v || 0).toLocaleString();
+const isoDay = (d) => d.toISOString().slice(0, 10);
+function svgEl(tag, attrs, ...children) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  for (const c of children) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+}
+// Daily spend as bars, every day of the range (a day without requests is a gap).
+function spendBars(byDay, start, end) {
+  const spend = Object.fromEntries(byDay.map((d) => [String(d.date).slice(0, 10), Number(d.cost_usd || 0)]));
+  const days = [];
+  for (let d = new Date(start + "T00:00:00Z"); isoDay(d) <= end; d.setUTCDate(d.getUTCDate() + 1)) days.push(isoDay(d));
+  const max = Math.max(...days.map((d) => spend[d] || 0), 0);
+  const W = 1000, H = 140, pad = 16, bw = W / days.length;
+  const svg = svgEl("svg", { class: "bars", viewBox: `0 0 ${W} ${H + pad}`, width: "100%", role: "img", "aria-label": "Spend per day" });
+  days.forEach((d, i) => {
+    const h = max ? (spend[d] || 0) / max * H : 0;
+    svg.append(svgEl("rect", { x: i * bw + 1, y: H - h, width: Math.max(bw - 2, 1), height: Math.max(h, 0) },
+      svgEl("title", {}, `${d}: ${usd(spend[d])}`)));
+  });
+  svg.append(svgEl("text", { x: 0, y: H + pad - 2 }, days[0]), svgEl("text", { x: W, y: H + pad - 2, "text-anchor": "end" }, days[days.length - 1]));
+  svg.append(svgEl("text", { x: 0, y: 10 }, max ? `max ${usd(max)} / day` : "no spend"));
+  return svg;
+}
+function budgetMeter(p) {
+  if (!p.budget_usd_30d) return el("span", { class: "muted" }, "no budget");
+  const used = p.budget_used || 0, pct = Math.min(used * 100, 100);
+  const bar = el("span", { class: used >= 1 ? "bad" : used >= 0.8 ? "warn" : "", style: `width:${pct}%` });
+  return el("span", {}, el("span", { class: "meter" }, bar), `${usd(p.cost_30d)} of $${p.budget_usd_30d} (${(used * 100).toFixed(used < 0.1 ? 1 : 0)}%)`);
+}
+const numTh = (h) => el("th", { class: "num" }, h);
+const numTd = (v) => el("td", { class: "num" }, v);
+
+async function viewUsage(arg) {
+  const opts = Object.assign({ days: 30, project: "" }, arg || {});
+  const end = isoDay(new Date()), startD = new Date(); startD.setUTCDate(startD.getUTCDate() - (opts.days - 1));
+  const start = isoDay(startD);
+  const q = new URLSearchParams({ start, end }); if (opts.project) q.set("project", opts.project);
+  const r = await api("GET", `/usage?${q}`);
+  const range = el("select", { onchange: () => show("usage", { ...opts, days: Number(range.value) }) },
+    [7, 30, 90].map((n) => el("option", n === opts.days ? { value: n, selected: "" } : { value: n }, `Last ${n} days`)));
+  const pick = el("select", { onchange: () => show("usage", { ...opts, project: pick.value }) },
+    el("option", { value: "" }, "All my projects"), r.projects.map((p) => el("option", p === opts.project ? { value: p, selected: "" } : { value: p }, p)));
+  const t = r.totals;
+  const tiles = el("div", { class: "tiles" }, [["Spend", usd(t.cost_usd)], ["Model calls", count(t.requests)], ["Tokens", count(t.tokens)],
+    ["Refused by policy (403)", count(t.denied)], ["Over a limit (429)", count(t.limited)]].map(([k, v]) => el("div", { class: "tile" }, el("div", { class: "label" }, k), el("div", { class: "value" }, v))));
+  const projects = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Project"), numTh("Spend"), el("th", {}, "Last 30 days of the budget"), numTh("At this week's pace"), numTh("Calls"), numTh("Tokens"), numTh("403"), numTh("429"), el("th", {}, ""))),
+    el("tbody", {}, r.by_project.map((p) => el("tr", { class: "clickable", onclick: () => show("usage", { ...opts, project: p.project || "" }) },
+      el("td", {}, p.project ? el("strong", {}, p.project) : el("span", { class: "muted" }, "no project (before the log had one)")),
+      numTd(usd(p.cost_usd)), el("td", {}, budgetMeter(p)), numTd(p.budget_usd_30d ? usd(p.forecast_30d) : ""),
+      numTd(count(p.requests)), numTd(count(p.tokens)), numTd(count(p.denied)), numTd(count(p.limited)),
+      el("td", {}, p.project ? el("button", { class: "action", onclick: (ev) => { ev.stopPropagation(); viewProject(p.project); } }, "Limits and budget…") : null)))));
+  const models = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Model"), el("th", {}, "Placement"), numTh("Calls"), numTh("Of them via auto"), numTh("Input tokens"), numTh("Output tokens"), numTh("Spend"))),
+    el("tbody", {}, r.by_model.map((m) => el("tr", {}, el("td", {}, m.model || ""), el("td", {}, m.placement ? el("span", { class: "chip" }, m.placement) : ""),
+      numTd(count(m.requests)), numTd(count(m.via_auto)), numTd(count(m.input_tokens)), numTd(count(m.output_tokens)), numTd(usd(m.cost_usd))))));
+  const agents = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Project"), el("th", {}, "Agent or key"), numTh("Calls"), numTh("Tokens"), numTh("Spend"))),
+    el("tbody", {}, r.by_agent.map((a) => el("tr", {}, el("td", {}, a.project || ""), el("td", {}, a.agent ? [el("strong", {}, a.agent), " (agent)"] : (a.key_id || "")),
+      numTd(count(a.requests)), numTd(count(a.tokens)), numTd(usd(a.cost_usd))))));
+  const o = r.onprem;
+  const onprem = el("p", {}, `On-prem models answered ${count(o.input_tokens)} input and ${count(o.output_tokens)} output tokens, at no per-token charge`,
+    o.reference_model ? `; at ${o.reference_model}'s price they would have cost ${usd(o.reference_usd)}.` : ".");
+  const panels = [
+    el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, opts.project ? `Usage of ${opts.project}` : "Usage"), el("span", { class: "spacer" }), pick, range),
+      el("p", { class: "muted" }, `${r.start} to ${r.end}. From the gateway's access log, hourly`, r.through ? `: complete up to ${when(r.through)}.` : ": nothing extracted yet.",
+        " Spend is what the gateway charged, the amount budgets count; 30-day budget figures run up to today.")),
+    tiles,
+    el("section", { class: "panel" }, el("h2", {}, "Spend per day"), spendBars(r.by_day, r.start, r.end)),
+    el("section", { class: "panel" }, el("h2", {}, "Projects"), r.by_project.length ? projects : el("p", { class: "muted" }, "No requests in this range.")),
+    el("section", { class: "panel" }, el("h2", {}, "Models"), r.by_model.length ? models : el("p", { class: "muted" }, "No model calls."), onprem),
+    el("section", { class: "panel" }, el("h2", {}, "Agents and keys"), r.by_agent.length ? agents : el("p", { class: "muted" }, "None.")),
+  ];
+  if (opts.project) panels.push(requestsPanel(opts.project, r.end));
+  $main.replaceChildren(...panels);
+}
+
+function requestsPanel(project, day) {
+  const date = el("input", { type: "date", value: day });
+  const holder = el("div", {}, el("p", { class: "muted" }, "Loading…"));
+  const load = async () => {
+    try {
+      const rows = await api("GET", `/usage/requests?${new URLSearchParams({ project, date: date.value, limit: 50 })}`);
+      holder.replaceChildren(rows.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Time (UTC)"), el("th", {}, "Agent or key"), el("th", {}, "What"), el("th", {}, "Outcome"), numTh("Tokens in / out"), numTh("Spend"), numTh("Duration"), el("th", {}, "Trace id"))),
+        el("tbody", {}, rows.map((q) => el("tr", {}, el("td", { class: "muted" }, String(q.ts).slice(11, 19)), el("td", {}, q.agent || q.key_id || ""),
+          el("td", {}, q.kind === "model" ? [q.model || "", q.virtual_model ? el("span", { class: "chip" }, q.virtual_model) : null] : q.kind === "mcp" ? `MCP ${q.mcp_method || ""}` : q.kind),
+          el("td", { class: q.outcome === "ok" ? "" : "error" }, `${q.outcome} ${q.status ?? ""}`), numTd(`${count(q.input_tokens)} / ${count(q.output_tokens)}`), numTd(usd(q.cost_usd)),
+          numTd(q.duration_ms == null ? "" : `${Math.round(q.duration_ms)} ms`), el("td", { class: "muted" }, el("code", {}, q.trace_id || "")))))) : el("p", { class: "muted" }, "No requests that day."));
+    } catch (e) { holder.replaceChildren(el("p", { class: "error" }, e.message)); }
+  };
+  date.addEventListener("change", load);
+  load();
+  return el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Requests, the dearest first"), el("span", { class: "spacer" }), date),
+    el("p", { class: "muted" }, "Up to 50 of the day. The trace id finds the call in Tempo."), holder);
+}
+
 function show_nav(view) { for (const b of document.querySelectorAll("nav button")) b.classList.toggle("active", b.dataset.view === view); }
 
 // --- start ---
