@@ -1,0 +1,57 @@
+{{- $v := .Values }}
+{{- if $v.auto.enabled }}
+{{- $catalog := .Values.catalog | default dict }}
+{{- /* model "auto": the platform picks the model for the caller's project.
+     Each auto model is a virtual model whose callout asks OPA's REST API
+     (policies/gateway/select.rego) and routes to the model it names. OPA
+     only names models the project may use; an unknown project gets no
+     answer, and the gateway returns 503 (no fallback model on purpose: a
+     fallback would also serve projects OPA doesn't know).
+     auto-<task>, one per catalog task class, carries the class for semantic
+     routing; plain auto carries none. Virtual models must be public. */}}
+{{- $models := list (dict "name" "auto" "task" "") }}
+{{- range $catalog.tasks }}
+{{- $models = append $models (dict "name" (printf "auto-%s" .) "task" .) }}
+{{- end }}
+{{- range $models }}
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayModel
+metadata:
+  name: {{ .name }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ $v.gatewayName }}
+      sectionName: http
+  match:
+    model: {{ .name }}
+  virtualModel:
+    callout:
+      backendRef:
+        name: {{ $v.auto.opaService }}
+        port: {{ $v.auto.opaPort }}
+      headers:
+        ":path": '"/v1/data/gateway/select/result"'
+        ":method": '"POST"'
+        content-type: '"application/json"'
+      {{- if .task }}
+      body: '{"input": {"project": apiKey.project, "key_id": apiKey.key_id, "task": "{{ .task }}"}}'
+      {{- else }}
+      body: '{"input": {"project": apiKey.project, "key_id": apiKey.key_id}}'
+      {{- end }}
+      transformation:
+        model: callout.body.result.model
+      {{- with $v.auto.cacheTTL }}
+      # Cached per key (a registered agent's key has a narrower scope than its
+      # project's): a cache hit skips OPA, so a model the policy has since
+      # revoked is still served until the entry expires (values.yaml).
+      cache:
+        key:
+          - apiKey.project
+          - apiKey.key_id
+        ttl: {{ . }}
+      {{- end }}
+{{- end }}
+{{- end }}

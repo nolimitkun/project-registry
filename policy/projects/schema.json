@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nolimitkun/mini-platform-deployment/projects/schema.json",
+  "title": "Gateway project",
+  "description": "One project of the model and tool gateway (docs/agentgateway.md). scripts/gen-projects.py checks this schema plus the cross-file rules it can't express.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "project",
+    "owner",
+    "data_class"
+  ],
+  "properties": {
+    "project": {
+      "description": "The project id. Must match the file name.",
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+    },
+    "owner": {
+      "description": "Who answers for this project: a team or a person.",
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "data_class": {
+      "description": "The most sensitive data the project sends. Caps the placements it may use (policies/gateway/data.json classes).",
+      "enum": [
+        "restricted",
+        "confidential",
+        "internal",
+        "public"
+      ]
+    },
+    "placement": {
+      "description": "Where the project's requests may go. Optional; defaults to everything its data_class allows, and may only narrow that.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "onprem",
+          "gcp",
+          "external"
+        ]
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "description": "Glob patterns over catalog model names (the project registry's model records). Defaults to [\"*\"]. Each pattern must match at least one catalog model.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "routing": {
+      "description": "How model \"auto\" picks a model for this project, always among the models it may use. cheapest: lowest price in the catalog. fastest: lowest time to first token measured by the ranking job, cheapest first where none is known yet. semantic: the vLLM Semantic Router names the task class and catalog tasks give the order, cheapest as the fallback. fixed:<model>: always that model. Default: cheapest.",
+      "type": "string",
+      "pattern": "^(cheapest|fastest|semantic|fixed:[a-z0-9.-]+)$"
+    },
+    "limits": {
+      "description": "Rate limits, shared by all of the project's keys and all gateway replicas (rate-limit service). Absent: no limit. Tokens are counted when a call completes, so the call that crosses the limit still finishes and the next one is refused.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "requests_per_minute": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tokens_per_minute": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "budget": {
+      "description": "Spend cap in USD over a fixed 30-day window (the rate-limit service's month: 30-day periods counted from the Unix epoch, not calendar months), at agentgateway's prices (the catalog's). Self-hosted models cost nothing. Charged when a call completes, so the call that crosses the cap still finishes. Absent: no cap.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "usd_per_30_days"
+      ],
+      "properties": {
+        "usd_per_30_days": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "keys": {
+      "description": "Ids of the project's own API keys. The secrets themselves are in Vault (scripts/bootstrap-vault-secrets.sh). A key whose id is not listed here or by one of the project's agents (agents/*.yaml) is refused. Each id is the project id, or the project id followed by a dash and a suffix. May be empty when every key belongs to an agent.",
+      "type": "array",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+      }
+    },
+    "mcp_tools": {
+      "description": "Glob patterns over the gateway's MCP tool names (grafana_..., kagent-tools_...). Empty or absent: no MCP access.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "deployments": {
+      "description": "May call the self-hosted model deployments directly, by KServe's path route /<namespace>/<name>/v1/... in the catalog's servingNamespaces, bypassing the catalog: the model onboarding pipeline evaluating and smoke-testing exactly what it deployed. Needs onprem among the placements. Default false.",
+      "type": "boolean"
+    }
+  }
+}

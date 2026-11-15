@@ -13,7 +13,10 @@ platform team at least (approvals.py). Once approved, the publisher activates th
 records rendered at that commit (if they differ from the active ones), then the
 policy; the change is active once every ready OPA pod reports the commit.
 
-A commit that changes only inert files (INERT: docs, CI, tools no publish runs), under
+A commit that changes nothing in the policy (the repository's policy/ directory: the
+registry's own code lives beside it) is followed without a change request: OPA gets
+the same bundle under the new commit, so the active policy stays on the branch. A
+commit that changes only inert files (INERT: docs, CI, tools no publish runs), under
 which neither bundle changes, is recorded as `skipped`, with no approval: OPA keeps the
 active commit. Any other changed file counts: the renderers, the schemas and the chart
 act through the active commit (records are rendered, validated and charted at it), so a
@@ -94,7 +97,9 @@ class PolicySource:
         return {path: meta.split()[2] for meta, path in (line.split("\t", 1) for line in out.splitlines())}
 
     def changed(self, a: str, b: str) -> set[str]:
-        """The paths whose content differs between two commits (added, removed or changed)."""
+        """The paths of the policy whose content differs between two commits (added, removed or
+        changed). Raises CalledProcessError when a commit can't be checked out (one from
+        another repository: the policy moved)."""
         fa, fb = self.files(a), self.files(b)
         return {p for p in fa.keys() | fb.keys() if fa.get(p) != fb.get(p)}
 
@@ -249,6 +254,17 @@ class PolicyWatch:
         log.info("re-signed %s@%s with %s", self.policy_bundle, active, self.signer.keyid)
         return active
 
+    # --- a commit that changes nothing in the policy ---
+    def follow(self, sha: str, active: str) -> None:
+        """Activates sha, whose policy is the active commit's file for file: the same bundle
+        under the new revision, no approval (nothing OPA decides with changes)."""
+        with self.db.tx() as c, tempfile.TemporaryDirectory() as tmp:
+            self.ensure_built(sha, Path(tmp))
+            self.record(c, sha, None)
+            dbm.audit(c, ACTOR, "follow", f"{self.policy_bundle}@{sha}", {"commit": active}, self.source.info(sha))
+            self.store.activate(self.policy_bundle, sha)
+        log.info("followed %s: the policy at %s is the active one's", sha[:12], active[:12])
+
     # --- a new commit ---
     def propose(self) -> int | None:
         """Files the branch's new head as a policy change. Returns its id, or None when there is
@@ -260,6 +276,11 @@ class PolicyWatch:
         with self.db.tx() as c:
             if c.execute("select 1 from change_request where kind = 'policy' and object_id = %s", (sha,)).fetchone():
                 return None
+            waiting = c.execute("select 1 from change_request where kind = 'policy' "
+                                "and state in ('pending_approval', 'approved', 'publishing') limit 1").fetchone()
+        if not waiting and self.unchanged(active, sha):
+            self.follow(sha, active)
+            return None
         info = self.source.info(sha)
         before = {"commit": active}
         change = {"kind": "policy", "object_id": sha, "op": "update", "before": before, "after": info}
@@ -293,6 +314,13 @@ class PolicyWatch:
                  error or ("skipped: the bundles don't change" if skipped else "pending approval"))
         return row["id"]
 
+    def unchanged(self, active: str, sha: str) -> bool:
+        """Whether the policy at sha is the active one's, file for file."""
+        try:
+            return not self.source.changed(active, sha)
+        except subprocess.CalledProcessError:
+            return False                    # the active commit is elsewhere: can't tell
+
     def check(self, sha: str, active: str) -> dict:
         """Test, build, render the records, replay. Rejected for what the commit itself gets wrong.
         The report names the bundles it was checked against, so the publisher can tell whether
@@ -313,7 +341,11 @@ class PolicyWatch:
                 raise RuntimeError(f"no active {self.data_bundle} bundle (run the import)")
             old_data = self.store.fetch(self.data_bundle, data_rev, tmp / "old-data.tar.gz")
             report = {"policy_revision": active, "data_revision": data_rev, "tests": tests}
-            if (all(inert(p) for p in self.source.changed(active, sha))
+            try:
+                changed = self.source.changed(active, sha)
+            except subprocess.CalledProcessError:
+                changed = None              # the active commit is elsewhere (the policy moved): all of it
+            if (changed is not None and all(inert(p) for p in changed)
                     and same_bundle(new_policy, old_policy) and same_data(new_data, old_data)):
                 # only inert files changed, and nothing OPA loads
                 return report | {"unchanged": True, "kind": "policy", "replayed": 0, "changed": 0,

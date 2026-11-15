@@ -1,0 +1,82 @@
+{{- $v := .Values }}
+{{- /* Models come from the catalog (the project registry's records, rendered by
+     gen-catalog.py), which the registry puts in this chart's values when it
+     packages it. */}}
+{{- $catalog := .Values.catalog | default dict }}
+{{- if not $catalog.models }}
+{{- fail "catalog.models is empty: the project registry packages this chart with the catalog" }}
+{{- end }}
+{{- range $catalog.models }}
+{{- if eq .provider "KServe" }}
+{{- $deployment := split "/" .deployment }}
+---
+# A release of the model onboarding pipeline: the route sits in the
+# LLMInferenceService's namespace, next to the InferencePool it targets (a
+# model route may only point at one in its own namespace), and the pool's
+# endpoint picker chooses the vLLM pod. The gateway replaces the catalog name
+# with the name vLLM serves, so a new release only changes this entry.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayModel
+metadata:
+  name: {{ .name | replace "." "-" }}
+  namespace: {{ $deployment._0 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ $v.gatewayName }}
+      namespace: {{ $.Release.Namespace }}
+      sectionName: http
+  match:
+    model: {{ .name }}
+  provider: Custom
+  custom:
+    backendRef:
+      group: inference.networking.k8s.io
+      kind: InferencePool
+      name: {{ $deployment._1 }}-inference-pool
+    formats:
+      - type: Completions
+      - type: Responses
+  policies:
+    auth:
+      secretRef:
+        name: {{ $v.kserve.servingKeySecret }}
+        key: key
+    transformations:
+      - field: model
+        expression: {{ .servedModel | toJson | quote }}
+{{- else }}
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayModel
+metadata:
+  name: {{ .name | replace "." "-" }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ $v.gatewayName }}
+      sectionName: http
+  match:
+    model: {{ .name }}
+  provider: {{ .provider }}
+  {{- with .baseURL }}
+  baseURL: {{ . }}
+  {{- end }}
+  {{- if eq .provider "VertexAI" }}
+  vertexai:
+    projectId: {{ $v.gcp.project }}
+    region: {{ .region }}
+  policies:
+    auth:
+      gcp:
+        type: AccessToken
+  {{- else if .secretRef }}
+  policies:
+    auth:
+      secretRef:
+        name: {{ .secretRef }}
+  {{- end }}
+{{- end }}
+{{- end }}

@@ -7,6 +7,28 @@ permissions:
   contents: read
 
 jobs:
+  # The policy (policy/): its records render, the chart renders with them, the Rego
+  # passes opa check, fmt and test, and both bundles build and load together.
+  policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: opa
+        run: |
+          mkdir -p .bin
+          curl -fsSL -o .bin/opa https://github.com/open-policy-agent/opa/releases/download/v1.22.2/opa_linux_amd64_static
+          chmod +x .bin/opa
+          echo "$PWD/.bin" >> "$GITHUB_PATH"
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - run: pip install jsonschema pyyaml
+      - run: policy/scripts/validate.sh
+
+  # The registry, with the policy of the same commit.
   test:
     runs-on: ubuntu-24.04
     services:
@@ -34,7 +56,7 @@ jobs:
           TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/registry
 
   image:
-    needs: test
+    needs: [policy, test]
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:

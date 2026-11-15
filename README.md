@@ -1,18 +1,18 @@
 # project-registry
 
-The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway: phase 2 of its multi-project policy, designed in [docs/design.md](docs/design.md).
+The project registry of [Mini Platform](https://github.com/nolimitkun/mini-platform-deployment)'s AI gateway: phase 2 of its multi-project policy, designed in [docs/design.md](docs/design.md). The gateway's policy is in this repository too, in [`policy/`](policy/README.md): the Rego, the record schemas, the renderers and the gateway-models chart.
 
 The registry publishes both of the gateway's OPA bundles, and every change to either is a change request with approvals, a replay report, activation tracking and rollback:
 
 - **project data** (`gateway-projects`): projects, their agents and exceptions. They live only here, in Postgres; Git has their schema and the script that renders them, not a copy. They change in the portal or through the API;
-- **the catalog**: every model (placement, provider, price), Google API and MCP tool (risk), and the catalog's settings (task classes, serving namespaces, MCP targets), as records like a project's (`/models`, `/google-apis`, `/tools`, `/catalog/settings`). They render with the policy repo's `gen-catalog.py` into the data bundle (`data.registry.catalog`) and into the gateway's routes (`registry/gatewaychart.py`). The platform team proposes them and approves every one; `portal.rego` adds security for a new model or Google API, a change to one's placement or provider settings, a tool made less risky, or a change to the MCP targets or serving namespaces, and the cost owner for a price. A catalog change may change any project's decisions, so its replay is a report, as for a policy change;
-- **settings**: the policy's parameters that reviewers decide: `data_classes` (the placements each data class allows), `autonomy` (what each agent autonomy may do without a human) and `approvals` (who approves each kind of change, on top of floors the policy keeps in code). Records like the catalog's (`/settings/<id>`, a Settings page in the portal), rendered by the policy repo's `gen-settings.py` into `data.registry.settings`; the platform team proposes, the platform team and security approve, and the replay is a report;
-- **policy** (`gateway-policy`): the Rego, written and reviewed in Git ([nolimitkun/gateway-policy](https://github.com/nolimitkun/gateway-policy)). A new commit on the branch becomes a change request here, and OPA loads it only once it is approved.
+- **the catalog**: every model (placement, provider, price), Google API and MCP tool (risk), and the catalog's settings (task classes, serving namespaces, MCP targets), as records like a project's (`/models`, `/google-apis`, `/tools`, `/catalog/settings`). They render with the policy's `gen-catalog.py` into the data bundle (`data.registry.catalog`) and into the gateway's routes (`registry/gatewaychart.py`). The platform team proposes them and approves every one; `portal.rego` adds security for a new model or Google API, a change to one's placement or provider settings, a tool made less risky, or a change to the MCP targets or serving namespaces, and the cost owner for a price. A catalog change may change any project's decisions, so its replay is a report, as for a policy change;
+- **settings**: the policy's parameters that reviewers decide: `data_classes` (the placements each data class allows), `autonomy` (what each agent autonomy may do without a human) and `approvals` (who approves each kind of change, on top of floors the policy keeps in code). Records like the catalog's (`/settings/<id>`, a Settings page in the portal), rendered by the policy's `gen-settings.py` into `data.registry.settings`; the platform team proposes, the platform team and security approve, and the replay is a report;
+- **policy** (`gateway-policy`): the Rego, written and reviewed in Git, in this repository's [`policy/`](policy/README.md). A new commit on the branch that changes it becomes a change request here, and OPA loads it only once it is approved; a commit that changes only the registry's code is followed with no request (the same bundle).
 
 A project data change goes like this:
 
 1. **Validation.** The registry renders the whole data bundle with the change applied, using the platform's own `scripts/gen-projects.py` at the commit of the active policy bundle. Schema errors and cross-file errors come back before anyone is asked to approve. A proposed kagent agent is also checked against the deployment repo's kagent wiring (`KAGENT_WIRING_REPO`): its own ModelConfig and secret must be there first.
-2. **Approvals.** Who has to approve is decided by policy: the registry asks OPA for `data.portal.required_approvals` (Rego in [gateway-policy](https://github.com/nolimitkun/gateway-policy)). The roles are:
+2. **Approvals.** Who has to approve is decided by policy: the registry asks OPA for `data.portal.required_approvals` (Rego in [`policy/policies/gateway/portal.rego`](policy/policies/gateway/portal.rego)). The roles are:
 
    | Role | Who holds it |
    |---|---|
@@ -88,6 +88,7 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 
 | Path | What |
 |---|---|
+| `policy/` | the gateway's policy: the Rego, the record schemas, the renderers (`gen-settings.py`, `gen-catalog.py`, `gen-projects.py`), the gateway-models chart ([its README](policy/README.md)) |
 | `registry/api.py` | REST API (FastAPI): records, change requests, approvals, rollback, OPA status |
 | `registry/publisher.py` | the publish loop |
 | `registry/policy.py` | policy commits from Git as change requests: test, build, replay, file |
@@ -111,7 +112,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 TEST_DATABASE_URL=postgresql://postgres:test@localhost:5432/registry .venv/bin/pytest -q
 ```
 
-The tests need `opa` on `PATH`. The flow tests need a disposable Postgres. They fetch the policy repo (nolimitkun/gateway-policy) from GitHub; to use a local checkout, set `POLICY_REPO` and `POLICY_REVISION`.
+The tests need `opa` on `PATH`. The flow tests need a disposable Postgres. They use the policy in `policy/` at `HEAD` (commit first), so the registry and the policy are tested together; `POLICY_REPO`, `POLICY_SUBDIR` and `POLICY_REVISION` pick another. CI also runs `policy/scripts/validate.sh`.
 
 ## Deployment
 

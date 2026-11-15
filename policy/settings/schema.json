@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The project registry's setting records, by id: the policy's parameters that reviewers decide. gen-settings.py checks each record against its id's schema here.",
+  "data_classes": {
+    "description": "The placements each data class allows. A project's placements are capped by its class (lib.rego).",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "restricted",
+      "confidential",
+      "internal",
+      "public"
+    ],
+    "properties": {
+      "restricted": {
+        "$ref": "#/$defs/placements"
+      },
+      "confidential": {
+        "$ref": "#/$defs/placements"
+      },
+      "internal": {
+        "$ref": "#/$defs/placements"
+      },
+      "public": {
+        "$ref": "#/$defs/placements"
+      }
+    }
+  },
+  "autonomy": {
+    "description": "The tool risks each agent autonomy may call without a human (authz.rego). Anything else is refused with a reason.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "read-only",
+      "supervised",
+      "autonomous"
+    ],
+    "properties": {
+      "read-only": {
+        "$ref": "#/$defs/risks"
+      },
+      "supervised": {
+        "$ref": "#/$defs/risks"
+      },
+      "autonomous": {
+        "$ref": "#/$defs/risks"
+      }
+    }
+  },
+  "approvals": {
+    "description": "Who approves what (portal.rego): for each kind of change portal.rego detects, the roles that must approve it, on top of the floors portal.rego keeps in code (a project's owner for its records, the platform team for the policy, the catalog and these settings, security for the policy and these settings). Every trigger is listed; [] adds no one.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "project.create",
+      "project.limit_raised",
+      "project.budget_raised",
+      "project.data_class_changed",
+      "project.placement_widened",
+      "mcp_tools.wildcard_added",
+      "exception.set",
+      "agent.create_beyond_read_only",
+      "agent.autonomy_raised",
+      "catalog.route_changed",
+      "model.price_changed",
+      "tool.risk_lowered",
+      "catalog.access_changed"
+    ],
+    "properties": {
+      "project.create": {
+        "$ref": "#/$defs/roles"
+      },
+      "project.limit_raised": {
+        "$ref": "#/$defs/roles"
+      },
+      "project.budget_raised": {
+        "$ref": "#/$defs/roles"
+      },
+      "project.data_class_changed": {
+        "$ref": "#/$defs/roles"
+      },
+      "project.placement_widened": {
+        "$ref": "#/$defs/roles"
+      },
+      "mcp_tools.wildcard_added": {
+        "$ref": "#/$defs/roles"
+      },
+      "exception.set": {
+        "$ref": "#/$defs/roles"
+      },
+      "agent.create_beyond_read_only": {
+        "$ref": "#/$defs/roles"
+      },
+      "agent.autonomy_raised": {
+        "$ref": "#/$defs/roles"
+      },
+      "catalog.route_changed": {
+        "$ref": "#/$defs/roles"
+      },
+      "model.price_changed": {
+        "$ref": "#/$defs/roles"
+      },
+      "tool.risk_lowered": {
+        "$ref": "#/$defs/roles"
+      },
+      "catalog.access_changed": {
+        "$ref": "#/$defs/roles"
+      }
+    }
+  },
+  "$defs": {
+    "placements": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "onprem",
+          "gcp",
+          "external"
+        ]
+      }
+    },
+    "risks": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "read",
+          "write",
+          "irreversible"
+        ]
+      }
+    },
+    "roles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "project_owner",
+          "cost_owner",
+          "security",
+          "platform"
+        ]
+      }
+    }
+  }
+}
