@@ -49,7 +49,7 @@ clients for callers, copies of the bundles to other sites):
 flowchart LR
   people[People in the portal<br/>Keycloak login] --> api[Registry API]
   api --> pg[(Postgres<br/>records, settings, changes,<br/>approvals, audit, health)]
-  api -->|diff| opap[OPA: required approvals]
+  api -->|diff| opap[OPA: required approvals,<br/>what a project can use]
   git[This repository's policy/<br/>Rego, schemas, renderers, chart] -->|new commit| pub
   pg -->|outbox + NOTIFY| pub[Publisher<br/>check, replay,<br/>build and sign]
   pub -->|policy changes, health| pg
@@ -67,6 +67,7 @@ flowchart LR
   opa -->|allow + limits in<br/>dynamic metadata| gw
   gw -->|descriptors with<br/>limitOverride| rl[rate-limit service]
   api -->|/metrics: budgets, prices,<br/>output health| prom[(Prometheus)]
+  prom -->|alerts, status page| api
   gw -->|access log, with project and key| loki[(Loki)]
   loki -->|hourly| usage[Usage job<br/>Parquet, DuckDB]
   usage -->|raw, fact, daily, dims| ub[(MinIO<br/>registry-usage)]
@@ -348,6 +349,9 @@ GET    /changes/{id}                  the diff, approvals needed and given, repl
 GET    /changes/{id}/diff             a policy change's files with unified diffs (the portal shows them)
 POST   /changes/{id}/approve|reject   (body: {"comment": ...})
 POST   /changes/{id}/withdraw         its author or the platform team, before it is published
+GET    /projects/{id}/effective       what it can use now, asked of the gateway's OPA (data.gateway.lib)
+GET    /status                        OPA's loaded bundles against the published ones, publisher outputs,
+                                      the usage ledger, the gateway's and the registry's alerts
 GET    /publications                  published revisions, newest first
 GET    /export                        every record (the format of the seed and the snapshots)
 GET    /internal/bundles/{bundle}     the active bundle, for policy-replay.py (cluster-internal)
@@ -357,8 +361,8 @@ POST   /opa/status                    OPA's status reports (cluster-internal)
 GET    /healthz
 ```
 
-Designed, not built yet: `GET /projects?owner=me`,
-`GET /projects/{id}/allowed-models` and `POST /projects/{id}/clients[/rotate|/revoke]`.
+Designed, not built yet: `GET /projects?owner=me` and
+`POST /projects/{id}/clients[/rotate|/revoke]`.
 
 ### Using it
 
@@ -366,7 +370,10 @@ Designed, not built yet: `GET /projects?owner=me`,
 `.test` hosts in `/etc/hosts` (README, "Reaching the ingress"). Log in with a
 Keycloak account of the realm. The portal shows:
 
-- projects, and the changes to each;
+- projects, what each can use now (as OPA decides it), and the changes to each;
+- agents, exceptions and the catalog, read only;
+- a status page: what each OPA pod loaded, the publisher's outputs, the usage
+  ledger and the alerts;
 - a form to propose a change (a JSON merge patch over the record) or to
   request a new project;
 - every change request with its diff, its approvals and the replay report,
