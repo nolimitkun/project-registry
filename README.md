@@ -78,7 +78,9 @@ Its runs record health as the output `usage`. `GET /usage` reports a date range 
 **Portal.** The registry serves a page at `/portal/` (one HTML file, `registry/static/portal.html`, same origin as the API) with these views, each at its own address (`#/changes/82`, `#/projects/admin`, `#/usage?project=admin&days=7`) so a change can be sent to its approvers; a login returns to the address it started from:
 
 - waiting for me, the start page: the changes with an open approval the caller may give (`GET /changes?awaiting=me`; every change carries `yours`, the approvals the caller may give now), with a count in the menu;
-- projects: each one's facts, a form for its fields (owner, data class, placement, model for `auto`, models, MCP tools, limits, budget, keys), or a JSON merge patch, and its changes;
+- projects: each one's facts, what it can use now, a form for its fields (owner, data class, placement, model for `auto`, models, MCP tools, limits, budget, keys), or a JSON merge patch, and its changes. What it can use is asked of the gateway's OPA (`GET /projects/<id>/effective`, one `/v1/query` over `data.gateway.lib`, the rules `authz.rego` enforces): every catalog model with how the project gets it (its patterns or an exception) or why not, the Google APIs and MCP tools by risk, and each of its agents' share, the tools its autonomy lets it call without a human apart from those it is refused. It is what OPA has loaded, so a change shows once it is published;
+- agents, exceptions and the catalog (models with their prices and tasks, Google APIs, MCP tools by risk), read only;
+- status (`GET /status`): the published revision of each bundle against what every ready OPA pod reports it loaded, each publisher output's last success and failure, how far the usage ledger reaches, and the pending and firing `Gateway*` and `ProjectRegistry*` alerts from Prometheus (`PROMETHEUS_URL`);
 - proposing a change in two steps: Review asks `POST /changes/preview`, which checks it as a submit would and answers who must approve it and what changes field by field, without filing anything; Submit files what was reviewed;
 - change requests with their field-by-field diff, approvals and replay report; approve and reject only for the approvals that are the caller's, withdraw for its author and the platform team;
 - the published bundles of both kinds, with rollback for the platform team;
@@ -109,6 +111,7 @@ The signing key version is pinned (`SIGNING_KEY_VERSION`). OPA verifies a bundle
 | `registry/approvals.py` | who approves: `data.portal.required_approvals` on OPA |
 | `registry/activation.py` | when a published revision is active on every ready OPA pod |
 | `registry/gatewaychart.py` | the gateway-models chart, published as a Helm repository in MinIO |
+| `registry/insight.py` | what a project can use, asked of OPA, and the status page's reads |
 | `registry/health.py` | each publisher output's last success and failure, for `/metrics` |
 | `registry/keys.py` | the gateway's API key maps in Vault, written from the records |
 | `registry/vault.py` | Vault: Kubernetes login, Transit signing, KV reads and writes |

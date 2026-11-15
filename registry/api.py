@@ -27,7 +27,7 @@ import datetime as dt
 from . import activation, approvals, health, usage, wakeup
 from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
-from . import bundles
+from . import bundles, insight
 from .bundles import Store
 from .policy import same_data
 from .render import Renderer, RenderError, kagent_wiring_from_env, renderer_from_env
@@ -520,6 +520,20 @@ def create_app(reg: Registry) -> FastAPI:
                     lines.append(f'model_price_usd_per_million_tokens{{model="{r["id"]}",'
                                  f'gen_ai_request_model="{label}",gen_ai_token_type="{kind}"}} {float(price[kind])}')
         return "\n".join(lines + outputs) + "\n"
+
+    @app.get("/projects/{oid}/effective")
+    def project_effective(oid: str, user: User = Depends(current_user)):
+        """What the project can use now, as the gateway's OPA decides it (insight.py)."""
+        try:
+            return insight.effective(insight.ask_opa(reg.opa_url, oid))
+        except (requests.RequestException, RuntimeError) as e:
+            raise HTTPException(503, f"OPA did not answer: {e}") from e
+
+    @app.get("/status")
+    def platform_status(user: User = Depends(current_user)):
+        """What OPA has loaded, the publisher's outputs, the usage ledger and the alerts."""
+        with reg.db.tx() as c:
+            return insight.status(c, reg.store, (reg.policy_bundle, reg.data_bundle), reg.opa_pods(), reg.usage)
 
     @app.get("/publications")
     def publications(user: User = Depends(current_user)):

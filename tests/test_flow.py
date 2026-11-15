@@ -658,3 +658,95 @@ def test_the_inbox_lists_what_waits_for_the_caller_and_preview_files_nothing(wor
     as_(COST)
     assert [c["id"] for c in client.get("/changes", params={"awaiting": "me"}).json()] == [ch["id"]]
     assert client.get("/changes", params={"awaiting": "you"}).status_code == 422
+
+
+def test_the_project_page_shows_what_opa_lets_a_project_use(world, monkeypatch, tmp_path):
+    """insight.EFFECTIVE run by the opa binary over this repository's policy and the data
+    bundle the importer published, as the API's /v1/query call would on the gateway's OPA."""
+    from fastapi.testclient import TestClient
+    from registry import insight
+    db, store = world["db"], world["store"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    data = store.fetch("gateway-projects", store.active("gateway-projects"), tmp_path / "data.tar.gz")
+    policy = Path(world["renderer"].checkout(head(REPO))) / "policies"
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.body
+
+    def opa_query(url, json=None, timeout=None):
+        assert url == "http://opa/v1/query"
+        out = subprocess.run([OPA, "eval", "-f", "json", "-d", str(policy), "-b", str(data), "-I", json["query"]],
+                             input=__import__("json").dumps(json["input"]), capture_output=True, text=True, check=True)
+        return Resp({"result": [r["bindings"] for r in __import__("json").loads(out.stdout).get("result", [])]})
+
+    monkeypatch.setattr(insight.requests, "post", opa_query)
+    app = api.create_app(world["reg"])
+    app.dependency_overrides[api.current_user] = lambda: ALICE
+    client = TestClient(app)
+
+    holmes = client.get("/projects/holmes/effective").json()
+    assert holmes["published"] and holmes["placements"] == ["gcp", "onprem"]
+    by_name = {m["name"]: m for m in holmes["models"]}
+    assert by_name["deepseek-v4-pro"]["via"] == "exception"              # external, through its exception
+    assert by_name["qwen3.6-27b"]["via"] == "rule"
+    assert all(t.startswith("grafana_") for risk in holmes["tools"].values() for t in risk)
+    agent = holmes["agents"][0]
+    assert agent["id"] == "holmes" and agent["models"] == ["deepseek-v4-pro"]
+    # supervised: reads without a human, writes and irreversible calls need one
+    assert set(agent["tools"]) == set(holmes["tools"]["read"])
+    assert set(agent["tools_needing_approval"]) == set(holmes["tools"]["write"] + holmes["tools"]["irreversible"])
+
+    admin = {m["name"]: m for m in client.get("/projects/admin/effective").json()["models"]}
+    assert admin["deepseek-v4-pro"]["via"] == "rule"                   # public data: external allowed
+
+    nobody = client.get("/projects/nobody/effective").json()
+    assert not nobody["published"] and not any(m["via"] for m in nobody["models"])
+    assert "not one of the project's" in nobody["models"][0]["why_not"]
+
+
+def test_the_status_page_compares_what_opa_loaded_with_what_is_published(world, monkeypatch):
+    from fastapi.testclient import TestClient
+    from registry import health, insight
+    db, store, reg = world["db"], world["store"], world["reg"]
+    first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    policy = store.active("gateway-policy")
+    reg.opa_pods = lambda: {"opa-a", "opa-b", "opa-c"}
+    reg.status({"labels": {"id": "1", "pod": "opa-a"}, "bundles": {"gateway-projects": {"active_revision": first},
+                                                                  "gateway-policy": {"active_revision": policy}}})
+    reg.status({"labels": {"id": "2", "pod": "opa-b"}, "bundles": {"gateway-projects": {"active_revision": "old"},
+                                                                  "gateway-policy": {"active_revision": policy}}})
+    h = health.Health(db, write_every=0)
+    h.run("data-bundle", lambda: None)
+    h.run("agentregistry", lambda: 1 / 0)
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": {"alerts": [
+                {"labels": {"alertname": "GatewayModelPriceDrift", "model": "m", "severity": "warning"}, "state": "firing",
+                 "activeAt": "2026-11-15T10:00:00Z", "annotations": {"summary": "s"}},
+                {"labels": {"alertname": "KubePodCrashLooping"}, "state": "firing"}]}}
+
+    monkeypatch.setattr(insight.requests, "get", lambda url, timeout=None: Resp())
+    monkeypatch.setenv("PROMETHEUS_URL", "http://prom")
+    app = api.create_app(reg)
+    app.dependency_overrides[api.current_user] = lambda: COST
+    s = TestClient(app).get("/status").json()
+    assert s["published"] == {"gateway-policy": policy, "gateway-projects": first}
+    opa = {o["pod"]: o for o in s["opa"]}
+    assert opa["opa-a"]["current"] and not opa["opa-b"]["current"]
+    assert opa["opa-c"]["reported_at"] is None and not opa["opa-c"]["current"]     # ready, never reported
+    outputs = {o["output"]: o for o in s["outputs"]}
+    assert not outputs["data-bundle"]["failing"] and outputs["agentregistry"]["failing"]
+    assert "ZeroDivisionError" in outputs["agentregistry"]["last_error"]
+    assert [a["name"] for a in s["alerts"]["alerts"]] == ["GatewayModelPriceDrift"]  # only the gateway's and the registry's
+    assert s["alerts"]["alerts"][0]["labels"] == {"model": "m"}

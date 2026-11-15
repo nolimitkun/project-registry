@@ -28,6 +28,7 @@
   th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
   tr.clickable { cursor: pointer; } tr.clickable:hover { background: var(--chip); }
   .chip { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--chip); font-size: 12px; margin: 1px 2px 1px 0; }
+  h3 { font-size: 13px; margin: 16px 0 6px; }
   .state-active { color: var(--ok); } .state-pending_approval, .state-approved, .state-publishing { color: var(--warn); }
   .state-failed, .state-rejected { color: var(--bad); } .state-withdrawn, .state-rolled_back, .state-superseded, .state-skipped { color: var(--muted); }
   pre { background: var(--chip); padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; margin: 6px 0; }
@@ -68,10 +69,14 @@
   <nav id="nav" hidden>
     <button data-view="inbox">Waiting for me <span id="badge" class="badge" hidden></span></button>
     <button data-view="projects">Projects</button>
+    <button data-view="agents">Agents</button>
+    <button data-view="exceptions">Exceptions</button>
+    <button data-view="catalog">Catalog</button>
     <button data-view="settings">Settings</button>
     <button data-view="changes">Changes</button>
     <button data-view="publications">Publications</button>
     <button data-view="usage">Usage</button>
+    <button data-view="status">Status</button>
   </nav>
   <span class="spacer"></span>
   <span id="who" class="muted"></span>
@@ -92,7 +97,7 @@ function el(tag, attrs, ...children) {
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
     else e.setAttribute(k, v);
   }
-  for (const c of children.flat()) if (c !== null && c !== undefined) e.append(c instanceof Node ? c : String(c));
+  for (const c of children.flat(Infinity)) if (c !== null && c !== undefined) e.append(c instanceof Node ? c : String(c));
   return e;
 }
 const json = (v) => JSON.stringify(v, null, 2);
@@ -206,7 +211,8 @@ function describe(detail) {
 let me = null;
 // Every view has an address (#/changes/82, #/projects/admin, #/usage?project=admin&days=7),
 // so a change can be sent to its approvers, and Back and reload work.
-const views = { inbox: viewInbox, projects: viewProjects, settings: viewSettings, changes: viewChanges, publications: viewPublications, usage: viewUsage };
+const views = { inbox: viewInbox, projects: viewProjects, agents: viewAgents, exceptions: viewExceptions, catalog: viewCatalog,
+  settings: viewSettings, changes: viewChanges, publications: viewPublications, usage: viewUsage, status: viewStatus };
 function go(path) { const h = "#/" + path; if (location.hash === h) route(); else location.hash = h; }
 function route() {
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
@@ -308,6 +314,7 @@ async function viewProject(id) {
     el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, `Project ${id}`), el("span", { class: "spacer" }),
       el("a", { href: `#/usage?project=${encodeURIComponent(id)}` }, "Usage")),
       el("p", { class: "muted" }, p.description || "", ` Record revision ${record.revision}.`), facts),
+    effectivePanel(id),
     el("section", { class: "panel" }, el("h2", {}, "Propose a change"),
       open ? el("p", { class: "error" }, "Change ", el("a", { href: `#/changes/${open.id}` }, `#${open.id}`), ` for this project is ${open.state}: a new one can be filed once it is done.`) : null,
       projectForm(id, p, classes, Object.keys(models).sort())),
@@ -617,6 +624,120 @@ function requestsPanel(project, day) {
   load();
   return el("section", { class: "panel" }, el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Requests, the dearest first"), el("span", { class: "spacer" }), date),
     el("p", { class: "muted" }, "Up to 50 of the day. The trace id finds the call in Tempo."), holder);
+}
+
+// --- read-only views: what a project can use, agents, exceptions, the catalog, status ---
+const chips = (xs) => xs && xs.length ? xs.map((x) => el("span", { class: "chip" }, x)) : el("span", { class: "muted" }, "—");
+const muted = (t) => el("span", { class: "muted" }, t);
+const table = (heads, rows) => el("table", {}, el("thead", {}, el("tr", {}, heads.map((h) => el("th", {}, h)))), el("tbody", {}, rows));
+const ago = (t) => {
+  if (!t) return muted("never");
+  const s = Math.round((Date.now() - new Date(t)) / 1000);
+  const rel = s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 129600 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} d`;
+  return el("span", { title: when(t) }, `${rel} ago`);
+};
+const toolList = (label, names, open) => names.length
+  ? el("details", open ? { open: "" } : {}, el("summary", {}, `${label} (${names.length})`), el("div", {}, chips(names)))
+  : el("p", { class: "muted" }, `${label}: none`);
+
+// Asked of the gateway's OPA, so it fills in after the rest of the page.
+function effectivePanel(id) {
+  const body = el("div", {}, el("p", { class: "muted" }, "Asking OPA…"));
+  (async () => {
+    try {
+      const e = await api("GET", `/projects/${encodeURIComponent(id)}/effective`);
+      if (!e.published) { body.replaceChildren(el("p", {}, "OPA has no project ", el("code", {}, id), " yet: it is not published.")); return; }
+      const how = (m) => m.via === "rule" ? "its models patterns" : m.via === "exception"
+        ? el("a", { href: `#/exceptions` }, "an exception") : muted(m.why_not);
+      body.replaceChildren(
+        el("p", {}, "Placements: ", chips(e.placements)),
+        table(["Model", "Placement", "Usable", "How, or why not"], e.models.map((m) => el("tr", {},
+          el("td", {}, m.via ? el("strong", {}, m.name) : muted(m.name)), el("td", {}, m.placement ? el("span", { class: "chip" }, m.placement) : muted("not in the catalog")),
+          el("td", { class: m.via ? "state-active" : "muted" }, m.via ? "yes" : "no"), el("td", {}, how(m))))),
+        el("p", {}, "Google APIs: ", chips(e.google_apis)),
+        el("h3", {}, "MCP tools, by risk"),
+        toolList("read", e.tools.read), toolList("write", e.tools.write, true), toolList("irreversible", e.tools.irreversible, true),
+        e.agents.length ? el("h3", {}, "Its agents") : null,
+        e.agents.length ? table(["Agent", "Autonomy", "Models", "MCP tools"], e.agents.map((a) => el("tr", {},
+          el("td", {}, el("a", { href: `#/agents` }, a.id)), el("td", {}, a.autonomy || ""), el("td", {}, chips(a.models)),
+          el("td", {}, a.tools.length || a.tools_needing_approval.length
+            ? [toolList("without a human", a.tools), toolList("need a human approval, so refused", a.tools_needing_approval)]
+            : muted("none"))))) : null);
+    } catch (err) { body.replaceChildren(el("p", { class: "error" }, err.message)); }
+  })();
+  return el("section", { class: "panel" }, el("h2", {}, "What it can use now"),
+    el("p", { class: "muted" }, "As the gateway's OPA decides it, with the bundles it has loaded: a change shows here once it is published."), body);
+}
+
+async function viewAgents() {
+  const agents = await api("GET", "/agents");
+  const rows = Object.entries(agents).map(([id, a]) => el("tr", {},
+    el("td", {}, el("strong", {}, id)), el("td", {}, a.project ? el("a", { href: `#/projects/${encodeURIComponent(a.project)}` }, a.project) : ""),
+    el("td", {}, a.autonomy || ""), el("td", {}, chips((a.models || {}).allow)), el("td", {}, chips(a.mcp_tools)), el("td", {}, chips(a.keys)),
+    el("td", {}, a.runtime ? `${a.runtime.kind}/${a.runtime.name}` : ""), el("td", { class: "muted" }, a.description || "")));
+  show(el("section", { class: "panel" }, el("h2", {}, "Agents"),
+    el("p", { class: "muted" }, "An agent's key gets its project's models and tools, narrowed by the agent's patterns; its autonomy decides which tool risks it may call without a human."),
+    rows.length ? table(["Agent", "Project", "Autonomy", "Models", "MCP tools", "Keys", "Runtime", "Description"], rows) : el("p", { class: "muted" }, "No agents.")));
+}
+
+async function viewExceptions() {
+  const exceptions = await api("GET", "/exceptions");
+  const rows = Object.entries(exceptions).map(([id, x]) => el("tr", {},
+    el("td", {}, el("a", { href: `#/projects/${encodeURIComponent(id)}` }, id)), el("td", {}, chips(x.models)),
+    el("td", {}, x.why || ""), el("td", { class: "muted" }, x.owner || "")));
+  show(el("section", { class: "panel" }, el("h2", {}, "Exceptions"),
+    el("p", { class: "muted" }, "Models a project may use beyond what its data class and placements allow. Setting one needs the security team's approval."),
+    rows.length ? table(["Project", "Models", "Why", "Owner"], rows) : el("p", { class: "muted" }, "No exceptions.")));
+}
+
+async function viewCatalog() {
+  const [models, apis, tools, catalog] = await Promise.all([api("GET", "/models"), api("GET", "/google-apis"), api("GET", "/tools"), api("GET", "/catalog")]);
+  const settings = catalog.settings || {};
+  const tasks = settings.tasks || {};
+  const price = (p, k) => p && p[k] != null ? `$${p[k]}` : "";
+  const modelRows = Object.entries(models).map(([id, m]) => el("tr", {},
+    el("td", {}, el("strong", {}, id)), el("td", {}, el("span", { class: "chip" }, m.placement || "")), el("td", {}, m.provider || ""),
+    numTd(price(m.price, "input")), numTd(price(m.price, "output")), el("td", {}, m.servedModel ? el("code", {}, m.servedModel) : ""),
+    el("td", {}, chips(Object.entries(tasks).filter(([, ms]) => ms.includes(id)).map(([t]) => t)))));
+  const byRisk = {};
+  for (const [t, x] of Object.entries(tools)) (byRisk[x.risk] = byRisk[x.risk] || []).push(t);
+  show(
+    el("section", { class: "panel" }, el("h2", {}, "Models"),
+      el("p", { class: "muted" }, "Prices in USD per million tokens, what budgets are charged at. Tasks: which models auto-<task> may pick."),
+      table(["Model", "Placement", "Provider", numTh("Input"), numTh("Output"), "Served name", "Tasks"], modelRows)),
+    el("section", { class: "panel" }, el("h2", {}, "Google APIs"),
+      table(["API", "Host", "Placement"], Object.entries(apis).map(([id, a]) => el("tr", {}, el("td", {}, el("strong", {}, id)), el("td", {}, el("code", {}, a.host || "")), el("td", {}, el("span", { class: "chip" }, a.placement || "")))))),
+    el("section", { class: "panel" }, el("h2", {}, `MCP tools (${Object.keys(tools).length})`),
+      el("p", { class: "muted" }, `Targets: ${(settings.targets || []).join(", ")}. A tool the catalog doesn't list counts as irreversible.`),
+      ["read", "write", "irreversible"].map((r) => toolList(r, (byRisk[r] || []).sort(), r !== "read"))),
+    el("section", { class: "panel" }, el("h2", {}, "Serving"), el("p", {}, "Namespaces whose KServe deployments projects with deployments may call: ", chips(settings.servingNamespaces))));
+}
+
+async function viewStatus() {
+  const s = await api("GET", "/status");
+  const short = (r) => r ? el("code", { title: r }, r.length > 20 ? r.slice(0, 12) : r) : muted("none");
+  const names = Object.keys(s.published);
+  const alerts = s.alerts.error ? el("p", { class: "error" }, s.alerts.error)
+    : s.alerts.alerts.length ? table(["Alert", "State", "Since", "About", "Summary"], s.alerts.alerts.map((a) => el("tr", {},
+      el("td", {}, el("strong", {}, a.name)), el("td", { class: a.state === "firing" ? "error" : "" }, a.state), el("td", {}, ago(a.since)),
+      el("td", {}, chips(Object.entries(a.labels).map(([k, v]) => `${k}=${v}`))), el("td", { class: "muted" }, a.summary || ""))))
+    : el("p", {}, "None pending or firing.");
+  show(
+    el("section", { class: "panel" }, el("h2", {}, "Policy on the gateway"),
+      el("p", {}, "Published: ", names.map((b) => [el("span", { class: "chip" }, b), " ", short(s.published[b]), " "])),
+      s.opa.length ? table(["OPA pod", ...names, "Reported", ""], s.opa.map((o) => el("tr", {}, el("td", {}, o.pod), names.map((b) => el("td", {}, short(o.bundles[b]))),
+        el("td", {}, ago(o.reported_at)), el("td", { class: o.current ? "state-active" : "error" }, o.current ? "current" : "behind")))) : el("p", { class: "error" }, "No OPA has reported.")),
+    el("section", { class: "panel" }, el("h2", {}, "The registry's outputs"),
+      el("p", { class: "muted" }, "Each round of the publisher's loop, and the hourly usage job."),
+      table(["Output", "Last success", "Last failure", ""], s.outputs.map((o) => el("tr", {}, el("td", {}, el("strong", {}, o.output)), el("td", {}, ago(o.last_success)),
+        el("td", {}, !o.last_failure ? muted("never") : !o.last_error ? ago(o.last_failure)
+          : o.failing ? [ago(o.last_failure), el("div", { class: "error" }, o.last_error)]
+          : el("details", {}, el("summary", { class: "muted" }, ago(o.last_failure), ", since recovered"), el("div", { class: "muted" }, o.last_error))),
+        el("td", { class: o.failing ? "error" : "state-active" }, o.failing ? "failing" : "ok"))))),
+    el("section", { class: "panel" }, el("h2", {}, "Usage ledger"),
+      !s.usage ? el("p", { class: "muted" }, "Not configured.") : s.usage.error ? el("p", { class: "error" }, s.usage.error)
+        : el("p", {}, "Complete up to ", s.usage.through ? [el("strong", {}, when(s.usage.through)), " (", ago(s.usage.through), ")."] : muted("never run."))),
+    el("section", { class: "panel" }, el("h2", {}, "Alerts"), alerts));
 }
 
 function show_nav(view) { for (const b of document.querySelectorAll("nav button")) b.classList.toggle("active", b.dataset.view === view); }
