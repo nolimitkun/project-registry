@@ -655,7 +655,7 @@ function requestsPanel(project, day) {
       dayRows = rows;
       holder.replaceChildren(rows.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Time (UTC)"), el("th", {}, "Agent or key"), el("th", {}, "What"), el("th", {}, "Outcome"), numTh("Tokens in / out"), numTh("Spend"), numTh("Duration"), el("th", {}, "Trace id"))),
         el("tbody", {}, rows.map((q) => el("tr", {}, el("td", { class: "muted" }, String(q.ts).slice(11, 19)), el("td", {}, q.agent || q.key_id || ""),
-          el("td", {}, q.kind === "model" ? [q.model || el("span", { class: "muted" }, "a model call (not named)"), q.virtual_model ? el("span", { class: "chip" }, q.virtual_model) : null] : q.kind === "mcp" ? `MCP ${q.mcp_method || ""}${q.mcp_tool ? " " + q.mcp_tool : ""}` : q.kind),
+          el("td", {}, q.kind === "model" ? [q.model || el("span", { class: "muted" }, "a model call (not named)"), q.virtual_model ? el("span", { class: "chip" }, q.virtual_model) : null] : q.kind === "mcp" ? ["MCP", q.mcp_method, q.mcp_tool].filter(Boolean).join(" ") : q.kind),
           el("td", { class: q.outcome === "ok" ? "" : "error" }, `${q.outcome} ${q.status ?? ""}`,
             q.outcome === "denied" && (q.kind === "model" || q.kind === "mcp") ? [" ", el("a", { href: "#/explain?" + new URLSearchParams({ project,
               ...(q.key_id ? { key: q.key_id } : {}), kind: q.kind === "mcp" ? "tool" : "model", ...((q.kind === "mcp" ? q.mcp_tool : q.model) ? { name: q.kind === "mcp" ? q.mcp_tool : q.model } : {}) }) }, "why?")] : null), numTd(`${count(q.input_tokens)} / ${count(q.output_tokens)}`), numTd(usd(q.cost_usd)),
@@ -856,7 +856,7 @@ async function viewExplain(params) {
       el("button", { class: "action primary", onclick: ask }, "Explain")), out));
   if (params.project && (params.name || params.kind === "models")) await ask();
   else if (params.project) {   // a call OPA refused: the gateway's log has no model or tool for it
-    out.replaceChildren(el("p", { class: "muted" }, "The gateway's log does not name the model or tool of a call OPA refused: pick the one it asked for."));
+    out.replaceChildren(el("p", { class: "muted" }, "This call's log line does not name its model or tool (lines from before the gateway logged refused.model and refused.tool): pick the one it asked for."));
     name.focus();
   }
 }

@@ -56,6 +56,9 @@ FIELDS = {
     "gen_ai.usage.output_tokens": "output_tokens", "agw.ai.usage.cost.total": "cost_usd",
     "duration": "duration_ms", "mcp.method.name": "mcp_method", "mcp.target": "mcp_target",
     "gen_ai.tool.name": "mcp_tool",          # without its target's prefix: list_datasources
+    # a call OPA refused never reached the LLM or MCP handling: the gateway takes its
+    # model or tool (with the target's prefix) from the body (agentgateway-config policies.yaml)
+    "refused.model": "refused_model", "refused.tool": "refused_tool",
 }
 RAW_COLUMNS = {
     "ts": "TIMESTAMPTZ", "pod": "VARCHAR", "trace_id": "VARCHAR", "span_id": "VARCHAR", "project": "VARCHAR",
@@ -63,6 +66,7 @@ RAW_COLUMNS = {
     "reason": "VARCHAR", "provider": "VARCHAR", "request_model": "VARCHAR", "original_model": "VARCHAR",
     "input_tokens": "BIGINT", "output_tokens": "BIGINT", "cost_usd": "DOUBLE", "duration_ms": "DOUBLE",
     "mcp_method": "VARCHAR", "mcp_target": "VARCHAR", "mcp_tool": "VARCHAR",
+    "refused_model": "VARCHAR", "refused_tool": "VARCHAR",
 }
 PAIR = re.compile(r'([A-Za-z_][\w.]*)=("(?:[^"\\]|\\.)*"|\S*)')
 DURATION = re.compile(r"^([0-9.]+)(ns|µs|us|ms|s|m)?$")
@@ -257,15 +261,16 @@ WITH raw AS (
          -- auto's original model is the virtual one
          coalesce(served.model,
                   CASE WHEN original_model IS NULL OR original_model LIKE 'auto%' THEN request_model
-                       ELSE original_model END) AS model
+                       ELSE original_model END,
+                  refused_model) AS model
   FROM dedup d LEFT JOIN models served ON served.served_model = d.request_model
 )
 SELECT ts, CAST(ts AS DATE) AS date, n.project, n.key_id, k.agent, n.protocol,
        -- what the request was: a model call, a list of models (/v1/models: clients probe
        -- it often), an MCP message, or something else the project's key opened. A call
        -- OPA refused never reached the gateway's LLM or MCP handling (protocol http,
-       -- reason DirectResponse), so its path tells what it was; its model or tool is not
-       -- in the log
+       -- reason DirectResponse), so its path tells what it was, and the gateway's
+       -- refused.model or refused.tool what it asked for
        CASE WHEN n.protocol = 'mcp' OR n.path = '/mcp' OR n.path LIKE '/mcp/%' THEN 'mcp'
             WHEN n.path LIKE '%/models' THEN 'list'
             WHEN n.protocol = 'llm' OR regexp_matches(coalesce(n.path, ''),
@@ -283,7 +288,7 @@ SELECT ts, CAST(ts AS DATE) AS date, n.project, n.key_id, k.agent, n.protocol,
        coalesce(cost_usd, 0) AS cost_usd, duration_ms, mcp_method,
        -- a tool as the catalog and the policy name it: its target's prefix, then its name
        CASE WHEN mcp_target IS NOT NULL AND mcp_tool IS NOT NULL THEN mcp_target || '_' || mcp_tool
-            ELSE mcp_tool END AS mcp_tool, trace_id
+            ELSE coalesce(mcp_tool, refused_tool) END AS mcp_tool, trace_id
 FROM named n
 LEFT JOIN keys k ON k.key_id = n.key_id
 LEFT JOIN models m ON m.model = n.model
@@ -317,7 +322,10 @@ def transform(bucket: Bucket, day: dt.date, tmp: Path) -> int:
     if not keys:
         return 0
     con = _duck()
-    paths = []
+    # every raw column, for a day whose files all predate one (union_by_name: NULL)
+    schema = tmp / f"raw-schema-{day}.parquet"
+    _to_parquet(con, [], RAW_COLUMNS, schema, tmp)
+    paths = [str(schema)]
     for k in keys:
         p = tmp / k.replace("/", "_")
         p.write_bytes(bucket.get(k))
