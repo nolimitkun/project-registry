@@ -152,6 +152,21 @@ def test_invalid_changes_are_refused_before_approval(world):
     assert e.value.status_code == 422
 
 
+def test_key_limits_only_narrow_the_projects_keys(world):
+    db, reg = world["db"], world["reg"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    for key_limits, error in [({"nobody": {"limits": {"requests_per_minute": 5}}}, "not one of the project's keys"),
+                              ({"admin": {"limits": {"requests_per_minute": 61}}}, "above the project's 60"),
+                              ({"admin": {"budget": {"usd_per_30_days": 26}}}, "above the project's 25")]:
+        with pytest.raises(HTTPException) as e:
+            reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"key_limits": key_limits}))
+        assert e.value.status_code == 422 and error in str(e.value.detail), e.value.detail
+    # tokens: the project has no limit, so any
+    ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"key_limits": {
+        "admin": {"limits": {"requests_per_minute": 5, "tokens_per_minute": 10**9}, "budget": {"usd_per_30_days": 1}}}}))
+    assert ch["state"] in ("pending_approval", "approved")
+
+
 def test_a_failed_replay_publishes_nothing(world, monkeypatch):
     db, store, reg, pub = world["db"], world["store"], world["reg"], world["pub"]
     first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)

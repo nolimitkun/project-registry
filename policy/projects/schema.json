@@ -97,6 +97,20 @@
         }
       }
     },
+    "key_limits": {
+      "description": "Limits and budget of single keys, on top of the project's: a call counts against both, and either refuses it (429) once used up. Keyed by key id: one of the project's keys or of its agents' (agents/*.yaml). Each value may not exceed the project's own for the same limit. A limit a key does not set: only the project's applies.",
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "limits": {"$ref": "#/properties/limits"},
+          "budget": {"$ref": "#/properties/budget"}
+        }
+      }
+    },
     "keys": {
       "description": "Ids of the project's own API keys. The secrets themselves are in Vault (scripts/bootstrap-vault-secrets.sh). A key whose id is not listed here or by one of the project's agents (agents/*.yaml) is refused. Each id is the project id, or the project id followed by a dash and a suffix. May be empty when every key belongs to an agent.",
       "type": "array",

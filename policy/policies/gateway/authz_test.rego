@@ -357,19 +357,33 @@ test_kserve_release_is_an_onprem_model if {
 		with data.registry.catalog.models["qwen2.5-1.5b"] as {"placement": "onprem", "provider": "KServe", "price": {"input": 0, "output": 0}}
 }
 
-open_webui_limits := {"requests_per_minute": 120, "tokens_per_minute": 4000000000, "budget_micro_usd": 50000000}
+open_webui_limits := {"requests_per_minute": 120, "tokens_per_minute": 4000000000, "budget_micro_usd": 50000000, "key_requests_per_minute": 4000000000, "key_tokens_per_minute": 4000000000, "key_budget_micro_usd": 4000000000}
 
 # Limits travel with the allow decision; absent ones are sent as unlimited.
 test_limits_in_the_allow_decision if {
 	d := authz.decision with input as chat("open-webui", "qwen3.6-27b")
 		with data.projects["open-webui"].limits as {"requests_per_minute": 7}
 		with data.projects["open-webui"].budget as {"usd_per_30_days": 2.5}
-	d.dynamic_metadata == {"requests_per_minute": 7, "tokens_per_minute": 4000000000, "budget_micro_usd": 2500000}
+	d.dynamic_metadata == {"requests_per_minute": 7, "tokens_per_minute": 4000000000, "budget_micro_usd": 2500000, "key_requests_per_minute": 4000000000, "key_tokens_per_minute": 4000000000, "key_budget_micro_usd": 4000000000}
 	n := authz.decision with input as chat("open-webui", "qwen3.6-27b")
 		with data.projects["open-webui"] as object.remove(data.projects["open-webui"], ["limits", "budget"])
-	n.dynamic_metadata == {"requests_per_minute": 4000000000, "tokens_per_minute": 4000000000, "budget_micro_usd": 4000000000}
+	n.dynamic_metadata == {"requests_per_minute": 4000000000, "tokens_per_minute": 4000000000, "budget_micro_usd": 4000000000, "key_requests_per_minute": 4000000000, "key_tokens_per_minute": 4000000000, "key_budget_micro_usd": 4000000000}
 
 	# a refused request carries none
 	r := authz.decision with input as chat("open-webui", "deepseek-v4-pro")
 	not r.dynamic_metadata
+}
+
+# A key's own limits go along as key_*, for its key only; the project's stay as they are.
+test_key_limits_in_the_allow_decision if {
+	kl := {"open-webui": {"limits": {"requests_per_minute": 2}, "budget": {"usd_per_30_days": 0.5}}}
+	d := authz.decision with input as chat("open-webui", "qwen3.6-27b")
+		with data.projects["open-webui"].key_limits as kl
+	d.dynamic_metadata == object.union(open_webui_limits, {"key_requests_per_minute": 2, "key_budget_micro_usd": 500000})
+
+	# another key of the project: none of its own
+	o := authz.decision with input as req_key("open-webui", "open-webui-other", "/v1/chat/completions", {"model": "qwen3.6-27b"})
+		with data.projects["open-webui"].key_limits as kl
+		with data.projects["open-webui"].keys as ["open-webui", "open-webui-other"]
+	o.dynamic_metadata == open_webui_limits
 }

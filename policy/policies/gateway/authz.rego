@@ -219,17 +219,28 @@ decision := {
 # per project. Absent in the project data: no limit, sent as unlimited (the
 # override's requests_per_unit is a uint32). The budget is in micro-USD, what
 # the gateway counts (llm.cost.total x 1e6), per fixed 30-day window.
+#
+# The key's own limits (key_limits) go along as key_*: the gateway counts them per
+# (project, key, kind) next to the project's (project, kind), and refuses the call
+# when either is used up. Always sent, unlimited when the key has none: the gateway
+# refuses a call whose override is missing, so this must be live before the
+# gateway's per-key descriptors are.
 unlimited := 4000000000
+
+key_limits := object.get(project, ["key_limits", key_id], {})
 
 limits := {
 	"requests_per_minute": object.get(project, ["limits", "requests_per_minute"], unlimited),
 	"tokens_per_minute": object.get(project, ["limits", "tokens_per_minute"], unlimited),
-	"budget_micro_usd": budget_micro_usd,
+	"budget_micro_usd": micro_usd(object.get(project, ["budget", "usd_per_30_days"], null)),
+	"key_requests_per_minute": object.get(key_limits, ["limits", "requests_per_minute"], unlimited),
+	"key_tokens_per_minute": object.get(key_limits, ["limits", "tokens_per_minute"], unlimited),
+	"key_budget_micro_usd": micro_usd(object.get(key_limits, ["budget", "usd_per_30_days"], null)),
 }
 
-budget_micro_usd := round(project.budget.usd_per_30_days * 1000000) if project.budget
+micro_usd(usd) := unlimited if usd == null
 
-else := unlimited
+else := round(usd * 1000000)
 
 decision := {
 	"allowed": false,
