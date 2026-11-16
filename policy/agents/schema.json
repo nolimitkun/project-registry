@@ -7,7 +7,7 @@
   "required": ["agent", "project", "owner", "description", "runtime", "autonomy", "keys"],
   "properties": {
     "agent": {"description": "Agent id; the file name without .yaml.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
-    "project": {"description": "The project the agent belongs to (projects/<id>.yaml). Its data class, placement, limits and budget apply; the agent can only narrow them.", "type": "string"},
+    "project": {"description": "The project the agent belongs to (projects/<id>.yaml). Its data class, placement, limits and budget apply; the agent can only narrow them. Limits of the agent's own keys are in the project's key_limits.", "type": "string"},
     "owner": {"description": "Team accountable for the agent.", "type": "string", "minLength": 1},
     "description": {"description": "What the agent is for: its mission, shown in agentregistry.", "type": "string", "minLength": 1},
     "runtime": {

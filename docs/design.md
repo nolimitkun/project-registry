@@ -86,6 +86,11 @@ This is the decision the rest depends on.
 - **The gateway applies them.** agentgateway reads that metadata in CEL as
   `extauthz.*`, and each rate-limit descriptor sets `limitOverride` from it,
   for example `{"unit": "minute", "requestsPerUnit": extauthz.rpm}`.
+- **Per key too.** A project's `key_limits` gives single keys (its own or
+  its agents') limits and a budget of their own, no higher than the project's.
+  The decision carries them as `key_*`, unlimited for a key without; the
+  gateway counts them under `(project, key_id, kind)` next to the project's
+  `(project, kind)`, and either one used up answers 429.
 - **The rate-limit service counts.** It honours an override for any
   descriptor in a known domain, with no entry for the project in its config.
   Its config shrinks to the domain and a default entry with a limit of 0, and
@@ -175,7 +180,7 @@ Today's approvals setting, with the floors:
 | The change | Approved by |
 |------------|-------------|
 | Add or remove models within the data class, lower a limit, edit a description | the project owner |
-| Raise a limit or the budget | plus the cost owner |
+| Raise a limit or the budget | plus the cost owner (a key's own limits, which stay within the project's, need only the project owner) |
 | Change `data_class` or widen the placement, add an exception, a wildcard in `mcp_tools`, raise an agent's `autonomy` (or give it more tool risks) | plus security |
 | Create a project | the platform team and security |
 | A model or Google API: new, placement or provider; a tool made less risky; the MCP targets or serving namespaces | the platform team and security |
@@ -310,6 +315,10 @@ Before merging, `scripts/policy-replay.py` gives the replay from a checkout.
   rule, `GatewayProjectBudgetForecast`, joins it `on(project)` with the last
   24 hours of spend, so the number of rules no longer grows with projects, and
   a budget changed in the registry is the one the alert uses. Built.
+  A key with a budget of its own gets `key_budget_usd{project, key_id}` and
+  `key_spend_30d_usd`, its last 30 days from the usage ledger (the gateway's
+  metrics have no key label), and one rule, `GatewayKeyBudgetHigh`, compares
+  them; it lags the ledger's hourly run. Built.
 - **Price drift:** budgets are charged at agentgateway's built-in price table
   (`llm.cost.total`; no CRD takes our own prices), while `auto` and the portal
   use the catalog's. The registry exports `model_price_usd_per_million_tokens`,
@@ -318,7 +327,7 @@ Before merging, `scripts/policy-replay.py` gives the replay from a checkout.
   model differs from its tokens at the catalog price, which also catches a new
   model the gateway's table doesn't know (charged $0). Built.
 - **Usage page** in the portal: spend and usage per project, agent, key and
-  model, each project's 30 days against its budget, and a project's dearest
+  model, each project's and each budgeted key's 30 days against its budget, and a project's dearest
   requests with their trace ids. Read from a ledger of the gateway's access log
   rather than Prometheus, whose 15 days, counter resets and project-only labels
   can't answer per key or per month: an hourly job (`registry/usage.py`) takes
@@ -358,7 +367,7 @@ GET    /changes                       state, kind, q (object or author), limit, 
 GET    /publications                  published revisions, newest first
 GET    /export                        every record (the format of the seed and the snapshots)
 GET    /internal/bundles/{bundle}     the active bundle, for policy-replay.py (cluster-internal)
-GET    /metrics                       project_budget_usd, model_price_usd_per_million_tokens and each publisher output's health, for Prometheus (cluster-internal)
+GET    /metrics                       project_budget_usd, key_budget_usd and key_spend_30d_usd, model_price_usd_per_million_tokens and each publisher output's health, for Prometheus (cluster-internal)
 POST   /rollback/{revision}           platform team only
 POST   /opa/status                    OPA's status reports (cluster-internal)
 GET    /healthz

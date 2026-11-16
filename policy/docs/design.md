@@ -223,9 +223,10 @@ gateway sends three descriptors per request, for each kind of counter:
 - **Per project and per key:** each kind is counted twice, under
   `(project, kind)` with the project's `limits` and `budget`, and under
   `(project, key_id, kind)` with the key's own (`key_limits`, `key_*` in the
-  decision). Either one used up answers 429. A key's own limit may only be
-  lower than the project's (gen-projects.py checks); a key without one is sent
-  as unlimited.
+  decision). Either one used up answers 429. A key's own limit may be no
+  higher than the project's (gen-projects.py checks, so a project's limit can
+  only be lowered below a key's along with the key's); a key without one is
+  sent as unlimited.
 - **Order of rollout:** the gateway refuses a call whose override is missing,
   so the policy that sends `key_*` must be live before the gateway's per-key
   descriptors are.
@@ -290,6 +291,10 @@ OPA activates each bundle on its own. OCP stacks, which add mandatory sources
 by label, only matter once separate OPA fleets need different policy.
 
 ### A project the rate-limit service doesn't know is refused
+
+*Phase 1; superseded:* the config no longer lists projects (the limits travel
+with OPA's decision, above), and its one entry refuses a descriptor that comes
+without an override.
 
 OPA learns about a project from Git within a minute or two, but the rate-limit
 service only after an Argo CD sync of `rate-limit`. In between, the service
