@@ -414,12 +414,25 @@ def _where(visible: set[str] | None, project: str | None) -> tuple[str, list]:
     return f"project IN ({', '.join('?' for _ in visible)})", sorted(visible)
 
 
+def key_spend_30d(reader: Reader, key_ids: list[str], today: dt.date) -> dict[str, float]:
+    """What each of these keys spent in the 30 days up to today (zero when nothing)."""
+    if not key_ids:
+        return {}
+    rows = reader.query("daily", today - dt.timedelta(days=29), today,
+                        f"SELECT key_id, sum(cost_usd) AS cost FROM t WHERE key_id IN ({', '.join('?' for _ in key_ids)}) "
+                        "GROUP BY key_id", list(key_ids))
+    spent = {r["key_id"]: r["cost"] or 0 for r in rows}
+    return {k: float(spent.get(k, 0)) for k in key_ids}
+
+
 def report(reader: Reader, visible: set[str] | None, start: dt.date, end: dt.date, today: dt.date,
            project: str | None = None, budgets: dict[str, float] | None = None,
-           prices: dict[str, dict] | None = None, reference_model: str | None = None) -> dict:
+           prices: dict[str, dict] | None = None, reference_model: str | None = None,
+           key_budgets: dict[str, float] | None = None) -> dict:
     """Spend and usage of [start, end] for the projects a caller may see (None: all, with
     the requests no project is known for), and each project's spend in the 30 days up to
-    `today` against its budget, with a forecast from its last 7 days. Spend is what the
+    `today` against its budget, with a forecast from its last 7 days, and the same for each
+    key with a budget of its own (key_budgets, key id -> USD). Spend is what the
     gateway charged; tokens and requests count model calls."""
     where, params = _where(visible, project)
     q = lambda sql, s=start, e=end: reader.query("daily", s, e, sql.replace("{where}", where), params)  # noqa: E731
@@ -456,6 +469,14 @@ def report(reader: Reader, visible: set[str] | None, start: dt.date, end: dt.dat
         r["cost_30d"] = spent.get("cost_30d") or 0
         r["forecast_30d"] = (spent.get("cost_7d") or 0) / 7 * 30
         r["budget_usd_30d"] = b
+        r["budget_used"] = r["cost_30d"] / b if b else None
+    key_burn = {r["key_id"]: r["cost_30d"] for r in q("""SELECT key_id, sum(cost_usd) AS cost_30d FROM t
+                                                         WHERE {where} AND key_id IS NOT NULL GROUP BY key_id""",
+                                                      today - dt.timedelta(days=29), today)} if key_budgets else {}
+    for r in by_agent:
+        b = (key_budgets or {}).get(r["key_id"])
+        r["budget_usd_30d"] = b
+        r["cost_30d"] = key_burn.get(r["key_id"]) or 0 if b else None
         r["budget_used"] = r["cost_30d"] / b if b else None
     onprem = q(f"""SELECT coalesce(sum(input_tokens), 0) AS input_tokens, coalesce(sum(output_tokens), 0) AS output_tokens
                    FROM t WHERE {{where}} AND {model} AND placement = 'onprem'""")[0] if by_day else {"input_tokens": 0, "output_tokens": 0}

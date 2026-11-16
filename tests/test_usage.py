@@ -205,3 +205,15 @@ def test_dims_name_each_keys_agent():
                     "kagent-k8s-agent": ("kagent", "kagent-k8s-agent")}
     p = {r["project"]: r for r in d["projects"]}
     assert (p["admin"]["budget_usd_30d"], p["open-webui"]["owner_group"], p["kagent"]["routing"]) == (25, "webui-owners", "cheapest")
+
+
+def test_a_keys_own_budget_is_reported_on_its_row(bucket):
+    usage.run(bucket, loki([CLOUD, KSERVE, AUTO]), RECORDS, OWNERS, now=NOW, backfill=3)
+    day = dt.date(2026, 11, 15)
+    r = usage.report(usage.Reader(bucket), None, day, day, day, key_budgets={"admin": 0.001})
+    rows = {a["key_id"]: a for a in r["by_agent"]}
+    spent = 0.00023175 + 0.0000231
+    assert rows["admin"]["budget_usd_30d"] == 0.001 and rows["admin"]["cost_30d"] == pytest.approx(spent)
+    assert rows["admin"]["budget_used"] == pytest.approx(spent / 0.001)
+    assert rows["kagent-k8s-agent"]["budget_usd_30d"] is None and rows["kagent-k8s-agent"]["budget_used"] is None
+    assert usage.key_spend_30d(usage.Reader(bucket), ["admin", "unused"], day) == pytest.approx({"admin": spent, "unused": 0})

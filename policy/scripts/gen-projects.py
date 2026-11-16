@@ -141,6 +141,7 @@ def load():
             "routing": routing,
             "limits": doc.get("limits", {}),
             "budget": doc.get("budget", {}),
+            "key_limits": doc.get("key_limits", {}),
             "deployments": deployments,
         }
 
@@ -184,7 +185,22 @@ def load():
     for pid, p in projects.items():
         if not p["keys"]:
             errors.append(f"projects/{pid}.yaml: no key, neither its own nor one of its agents'")
+        check_key_limits(pid, p, errors)
     return projects, exceptions, agents, errors
+
+
+def check_key_limits(pid, p, errors):
+    """A key's limits: only for the project's keys (its own or its agents'), and never
+    above the project's own for the same limit (a key may only narrow it)."""
+    project = {**p["limits"], "usd_per_30_days": p["budget"].get("usd_per_30_days")}
+    for key_id, kl in p["key_limits"].items():
+        where = f"projects/{pid}.yaml: key_limits.{key_id}"
+        if key_id not in p["keys"]:
+            errors.append(f"{where}: not one of the project's keys or its agents' {sorted(p['keys'])}")
+        own = {**(kl.get("limits") or {}), **(kl.get("budget") or {})}
+        for name, value in sorted(own.items()):
+            if project.get(name) is not None and value > project[name]:
+                errors.append(f"{where}: {name} {value} is above the project's {project[name]}")
 
 
 def project_models(p, pid, exceptions, catalog_models):

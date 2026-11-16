@@ -312,7 +312,7 @@ async function viewProject(id) {
     ["Owner", p.owner], ["Data class", p.data_class], ["Placement", p.placement || (classes[p.data_class] ? [...classes[p.data_class], "(all its class allows)"] : null)],
     ["Models", (p.models || {}).allow || ["*"]], ["Model for auto", p.routing || "cheapest"], ["MCP tools", p.mcp_tools],
     ["Requests per minute", (p.limits || {}).requests_per_minute ?? "no limit"], ["Tokens per minute", (p.limits || {}).tokens_per_minute ?? "no limit"],
-    ["Budget per 30 days", p.budget ? `$${p.budget.usd_per_30_days}` : "no cap"], ["Keys", p.keys], ["Agents' keys", agentKeys], ["Calls deployments directly", p.deployments ? "yes" : "no"],
+    ["Budget per 30 days", p.budget ? `$${p.budget.usd_per_30_days}` : "no cap"], ["Keys", p.keys], ["Agents' keys", agentKeys], ["Per-key limits", keyLimitsText(p.key_limits)], ["Calls deployments directly", p.deployments ? "yes" : "no"],
   ].flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, fmt(v))]));
   const open = changes.find((c) => ["pending_approval", "approved", "publishing"].includes(c.state));
   show(
@@ -322,12 +322,19 @@ async function viewProject(id) {
     effectivePanel(id),
     el("section", { class: "panel" }, el("h2", {}, "Propose a change"),
       open ? el("p", { class: "error" }, "Change ", el("a", { href: `#/changes/${open.id}` }, `#${open.id}`), ` for this project is ${open.state}: a new one can be filed once it is done.`) : null,
-      projectForm(id, p, classes, Object.keys(models).sort())),
+      projectForm(id, p, classes, Object.keys(models).sort(), [...(p.keys || []), ...Object.entries(agents).filter(([, a]) => a.project === id).flatMap(([, a]) => a.keys || [])])),
     el("section", { class: "panel" }, el("h2", {}, "Changes to this project"), changesTable(changes)));
 }
 
+// A project's key_limits as one line per key: "key: 10/min, 5000 tokens/min, $5 per 30 days".
+function keyLimitsText(kl) {
+  const out = Object.entries(kl || {}).map(([k, v]) => `${k}: ` + [(v.limits || {}).requests_per_minute && `${v.limits.requests_per_minute}/min`,
+    (v.limits || {}).tokens_per_minute && `${v.limits.tokens_per_minute} tokens/min`, v.budget && `$${v.budget.usd_per_30_days} per 30 days`].filter(Boolean).join(", "));
+  return out.length ? out : null;
+}
+
 // The project's fields as a form; Review sends only what changed, as a JSON merge patch.
-function projectForm(id, p, classes, modelNames) {
+function projectForm(id, p, classes, modelNames, allKeys) {
   const lines = (v) => (v || []).join("\n");
   const list = (t) => t.value.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
   const num = (t, what) => { if (t.value.trim() === "") return null; const n = Number(t.value); if (!Number.isInteger(n) || n < 1) throw new Error(`${what}: a whole number of at least 1, or empty for none`); return n; };
@@ -346,6 +353,16 @@ function projectForm(id, p, classes, modelNames) {
     keys: el("textarea", {}, lines(p.keys)),
     deployments: el("input", p.deployments ? { type: "checkbox", checked: "" } : { type: "checkbox" }),
   };
+  // One row per key, the project's own and its agents': empty fields leave only the project's limit.
+  const keyIds = [...new Set([...allKeys, ...Object.keys(p.key_limits || {})])].sort();
+  const keyInputs = Object.fromEntries(keyIds.map((k) => { const v = (p.key_limits || {})[k] || {}; return [k, {
+    rpm: el("input", { type: "number", min: "1", value: (v.limits || {}).requests_per_minute ?? "", style: "width:9em" }),
+    tpm: el("input", { type: "number", min: "1", value: (v.limits || {}).tokens_per_minute ?? "", style: "width:9em" }),
+    budget: el("input", { type: "number", min: "0", step: "any", value: v.budget ? v.budget.usd_per_30_days : "", style: "width:7em" }),
+  }]; }));
+  const keyTable = keyIds.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Key"), el("th", {}, "Requests/min"), el("th", {}, "Tokens/min"), el("th", {}, "USD per 30 days"))),
+    el("tbody", {}, keyIds.map((k) => el("tr", {}, el("td", {}, k), el("td", {}, keyInputs[k].rpm), el("td", {}, keyInputs[k].tpm), el("td", {}, keyInputs[k].budget)))))
+    : el("span", { class: "muted" }, "No keys yet.");
   const fixedRow = el("span", {}, " ", f.fixed);
   const syncFixed = () => { fixedRow.hidden = f.routing.value !== "fixed"; };
   f.routing.addEventListener("change", syncFixed); syncFixed();
@@ -360,18 +377,39 @@ function projectForm(id, p, classes, modelNames) {
       limits: (() => { const o = {}; const r = num(f.rpm, "Requests per minute"), t = num(f.tpm, "Tokens per minute"); if (r) o.requests_per_minute = r; if (t) o.tokens_per_minute = t; return Object.keys(o).length ? o : null; })(),
       budget: (() => { if (f.budget.value.trim() === "") return null; const n = Number(f.budget.value); if (!(n > 0)) throw new Error("Budget: more than 0 USD, or empty for no cap"); return { usd_per_30_days: n }; })(),
       keys: list(f.keys), deployments: f.deployments.checked || null,
+      key_limits: (() => {
+        const o = {};
+        for (const [k, i] of Object.entries(keyInputs)) {
+          const v = {}, l = {}, r = num(i.rpm, `${k}: requests per minute`), t = num(i.tpm, `${k}: tokens per minute`);
+          if (r) l.requests_per_minute = r; if (t) l.tokens_per_minute = t; if (Object.keys(l).length) v.limits = l;
+          if (i.budget.value.trim() !== "") { const n = Number(i.budget.value); if (!(n > 0)) throw new Error(`${k}: budget more than 0 USD, or empty for none`); v.budget = { usd_per_30_days: n }; }
+          if (Object.keys(v).length) o[k] = v;
+        }
+        return Object.keys(o).length ? o : null;
+      })(),
     };
-    const curOf = (k) => k === "routing" && p.routing === "cheapest" ? null : k === "models" && p.models && json(p.models.allow) === json(["*"]) ? null : k === "deployments" && p.deployments === false ? null : p[k] ?? null;
+    const curOf = (k) => k === "routing" && p.routing === "cheapest" ? null : k === "models" && p.models && json(p.models.allow) === json(["*"]) ? null : k === "deployments" && p.deployments === false ? null
+      // as the form builds it: keys sorted, none for an empty map
+      : k === "key_limits" ? (Object.keys(p.key_limits || {}).length ? Object.fromEntries(Object.keys(p.key_limits).sort().map((key) => { const v = p.key_limits[key], o = {};
+        if (v.limits) o.limits = Object.fromEntries(["requests_per_minute", "tokens_per_minute"].filter((x) => v.limits[x]).map((x) => [x, v.limits[x]]));
+        if (v.budget) o.budget = v.budget; return [key, o]; })) : null)
+      : p[k] ?? null;
     const spec = {};
     for (const [k, v] of Object.entries(want)) {
       if (json(curOf(k)) === json(v)) continue;
-      spec[k] = ["limits", "budget", "models"].includes(k) ? sub(p[k], v) : v;
+      spec[k] = ["limits", "budget", "models"].includes(k) ? sub(p[k], v)
+        // per key: a removed key, or a removed limit of one, as null
+        : k === "key_limits" ? (v === null ? null : Object.fromEntries([...new Set([...Object.keys(p.key_limits || {}), ...Object.keys(v)])].map((key) => {
+          const cur = (p.key_limits || {})[key], nxt = v[key];
+          return [key, !nxt ? null : { limits: cur && cur.limits ? sub(cur.limits, nxt.limits || null) : nxt.limits || null, budget: nxt.budget || null }];
+        })))
+        : v;
     }
     if (!Object.keys(spec).length) throw new Error("Nothing changed.");
     return { spec };
   };
   const row = (label, input, hint) => [el("label", {}, label), el("div", {}, input, hint ? el("div", { class: "hint" }, hint) : null)];
-  const advanced = el("textarea", {}, json({ limits: p.limits || {}, budget: p.budget || null }));
+  const advanced = el("textarea", {}, json({ limits: p.limits || {}, budget: p.budget || null, key_limits: p.key_limits || {} }));
   const form = el("div", { class: "form" },
       row("Owner", f.owner), row("Description", f.description),
       row("Data class", f.data_class, "The most sensitive data it sends; caps where its requests may go (the data_classes setting)."),
@@ -382,6 +420,7 @@ function projectForm(id, p, classes, modelNames) {
       row("Requests per minute", f.rpm, "Empty: no limit."), row("Tokens per minute", f.tpm, "Empty: no limit."),
       row("Budget, USD per 30 days", f.budget, "Empty: no cap. At the cap the gateway answers 429."),
       row("Keys", f.keys, "One id per line: the project id, or it and a dash and a suffix. A new id gets a key in Vault; a removed one is revoked."),
+      row("Per-key limits", keyTable, "A key's own limits, on top of the project's: a call counts against both, and either one used up answers 429. Empty: only the project's. None may exceed the project's own."),
       row("Calls deployments directly", el("label", {}, f.deployments, " by KServe's path route (the onboarding pipeline)")));
   return el("div", {}, form,
     proposal("projects", id, "update", body, null, [form]),
@@ -616,9 +655,9 @@ async function viewUsage(params) {
   const models = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Model"), el("th", {}, "Placement"), numTh("Calls"), numTh("Of them via auto"), numTh("Input tokens"), numTh("Output tokens"), numTh("Spend"))),
     el("tbody", {}, r.by_model.map((m) => el("tr", {}, el("td", {}, m.model || el("span", { class: "muted" }, "none named")), el("td", {}, m.placement ? el("span", { class: "chip" }, m.placement) : el("span", { class: "muted" }, "not in the catalog")),
       numTd(count(m.requests)), numTd(count(m.via_auto)), numTd(count(m.input_tokens)), numTd(count(m.output_tokens)), numTd(usd(m.cost_usd))))));
-  const agents = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Project"), el("th", {}, "Agent or key"), numTh("Calls"), numTh("Tokens"), numTh("Spend"))),
+  const agents = el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Project"), el("th", {}, "Agent or key"), numTh("Calls"), numTh("Tokens"), numTh("Spend"), el("th", {}, "Key's own budget, last 30 days"))),
     el("tbody", {}, r.by_agent.map((a) => el("tr", {}, el("td", {}, a.project || el("span", { class: "muted" }, "no project (before the log had one)")), el("td", {}, a.agent ? [el("strong", {}, a.agent), " (agent)"] : (a.key_id || el("span", { class: "muted" }, "no key"))),
-      numTd(count(a.requests)), numTd(count(a.tokens)), numTd(usd(a.cost_usd))))));
+      numTd(count(a.requests)), numTd(count(a.tokens)), numTd(usd(a.cost_usd)), el("td", {}, a.budget_usd_30d ? budgetMeter(a) : el("span", { class: "muted" }, "none"))))));
   const o = r.onprem;
   const onprem = el("p", {}, `On-prem models answered ${count(o.input_tokens)} input and ${count(o.output_tokens)} output tokens, at no per-token charge`,
     o.reference_model ? `; at ${o.reference_model}'s price they would have cost ${usd(o.reference_usd)}.` : ".");
@@ -637,8 +676,8 @@ async function viewUsage(params) {
         () => r.by_model.map((m) => [m.model, m.placement, m.requests, m.via_auto, m.input_tokens, m.output_tokens, m.cost_usd]))),
       r.by_model.length ? models : el("p", { class: "muted" }, "No model calls."), onprem),
     el("section", { class: "panel" }, panelHead("Agents and keys", r.by_agent.length && [filterInput(agents), csvButton(`usage-agents-${r.start}-${r.end}.csv`,
-        ["project", "agent", "key_id", "calls", "tokens", "spend_usd"],
-        () => r.by_agent.map((a) => [a.project, a.agent, a.key_id, a.requests, a.tokens, a.cost_usd]))]),
+        ["project", "agent", "key_id", "calls", "tokens", "spend_usd", "key_budget_usd_30d", "key_spend_30d_usd"],
+        () => r.by_agent.map((a) => [a.project, a.agent, a.key_id, a.requests, a.tokens, a.cost_usd, a.budget_usd_30d, a.cost_30d]))]),
       r.by_agent.length ? agents : el("p", { class: "muted" }, "None.")),
   ];
   if (opts.project) panels.push(requestsPanel(opts.project, r.end));
