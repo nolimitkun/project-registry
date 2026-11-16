@@ -98,3 +98,20 @@ def test_each_map_write_is_reported_even_if_the_next_one_fails():
     keys.reconcile(FakeKV(failing.data), "m", {"admin": "admin"}, new_key=counter(),
                    wrote=lambda n, d: seen.append((n, d)))
     assert seen == [(keys.CLIENTS, {"added": [], "removed": ["gone"], "changed": []})]   # then the clients' map
+
+
+def test_a_key_map_too_big_for_its_secret_is_not_written(monkeypatch, caplog):
+    want = {f"project-{i:04d}": f"project-{i:04d}" for i in range(100)}
+    kv = FakeKV()
+    keys.reconcile(kv, "m", want)                       # real keys: about 165 bytes an entry
+    size = keys.secret_bytes(kv.data[keys.GATEWAY])
+    assert 140 * 100 < size < 190 * 100
+    monkeypatch.setattr(keys, "WARN_AT", size)          # one more key: past the warning
+    more = {**want, "project-0100": "project-0100"}
+    keys.reconcile(kv, "m", more)
+    assert "near the" in caplog.text and "project-0100" in kv.data[keys.GATEWAY]
+    monkeypatch.setattr(keys, "LIMIT", size)            # and past the limit: neither map changes
+    before = (dict(kv.data[keys.GATEWAY]), dict(kv.data[keys.CLIENTS]))
+    with pytest.raises(ValueError, match="not written"):
+        keys.reconcile(kv, "m", {**more, "project-0101": "project-0101"})
+    assert (kv.data[keys.GATEWAY], kv.data[keys.CLIENTS]) == before
