@@ -79,8 +79,8 @@ def merge(base: dict, patch: dict) -> dict:
     for k, v in patch.items():
         if v is None:
             out.pop(k, None)
-        elif isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = merge(out[k], v)
+        elif isinstance(v, dict):    # into what is there, or {}: nulls in a new object are dropped
+            out[k] = merge(out[k] if isinstance(out.get(k), dict) else {}, v)
         else:
             out[k] = v
     return out

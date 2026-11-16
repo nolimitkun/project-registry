@@ -842,3 +842,11 @@ def test_why_denied_evaluates_the_gateway_policy_and_the_audit_log_is_for_approv
     assert client.get("/audit", params={"limit": 1}).status_code == 200
     as_(User("dev", {"some-team"}))
     assert client.get("/audit").status_code == 403
+
+
+def test_merge_is_rfc_7386():
+    # a null in an object the target doesn't have yet is dropped, not kept (the portal's
+    # per-key form sends one for a limit a new key leaves empty)
+    assert api.merge({"a": 1}, {"k": {"x": {"y": 2}, "z": None}}) == {"a": 1, "k": {"x": {"y": 2}}}
+    assert api.merge({"k": 3}, {"k": {"z": None}}) == {"k": {}}
+    assert api.merge({"k": {"x": 1, "z": 2}}, {"k": {"z": None}, "a": None}) == {"k": {"x": 1}}
