@@ -850,3 +850,9 @@ def test_merge_is_rfc_7386():
     assert api.merge({"a": 1}, {"k": {"x": {"y": 2}, "z": None}}) == {"a": 1, "k": {"x": {"y": 2}}}
     assert api.merge({"k": 3}, {"k": {"z": None}}) == {"k": {}}
     assert api.merge({"k": {"x": 1, "z": 2}}, {"k": {"z": None}, "a": None}) == {"k": {"x": 1}}
+
+
+def test_a_refused_google_api_gets_a_hint():
+    from registry import insight
+    assert "placement" in insight.hint("Google API tts is not allowed for project model-onboarding (its placement, gcp, is not one of the project's: onprem)")
+    assert "catalog" in insight.hint("Google API unknown is not in the catalog")

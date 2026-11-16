@@ -72,11 +72,18 @@ allow if {
 # Google's native APIs (speech, TTS, Vertex) under /google/<api>/.
 allow if {
 	authenticated
+	google_api
+	lib.catalog.google_apis[google_api].placement in lib.placements(project_id)
+}
+
+# The API a /google/<api>/... path names.
+google_api := parts[2] if {
 	parts := split(path, "/")
 	parts[1] == "google"
 	count(parts) > 3
-	lib.catalog.google_apis[parts[2]].placement in lib.placements(project_id)
 }
+
+google_path if startswith(path, "/google/")
 
 # MCP (the merged endpoint at /mcp). A project with mcp_tools may open
 # sessions, list tools and so on; each tools/call must name a tool matching one
@@ -186,6 +193,13 @@ reason := "unknown project" if {
 	agent_id
 } else := sprintf("project %v may use no MCP tools", [project_id]) if {
 	mcp_path
+} else := sprintf("Google API %v is not in the catalog", [google_api]) if {
+	google_api
+	not lib.catalog.google_apis[google_api]
+} else := sprintf("Google API %v is not allowed for project %v (its placement, %v, is not one of the project's: %v)", [google_api, project_id, lib.catalog.google_apis[google_api].placement, concat(", ", sort(lib.placements(project_id)))]) if {
+	google_api
+} else := "a Google API path is /google/<api>/<the API's own path>" if {
+	google_path
 } else := "denied"
 
 # The models a project sees in /v1/models: the ones it may name, plus the

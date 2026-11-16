@@ -162,6 +162,8 @@ HINTS = [
     (r"^tool .* is not allowed for project ", "Add a pattern for it to the project's MCP tools."),
     (r"^agent .* may use no MCP tools", "Give the agent MCP tools patterns."),
     (r"^project .* may use no MCP tools", "Give the project MCP tools patterns."),
+    (r"^Google API .* is not allowed for project ", "The API's placement must be one of the project's: its data class and placements decide."),
+    (r"^Google API .* is not in the catalog", "Only the catalog's Google APIs have a route; adding one is a catalog change."),
 ]
 
 
