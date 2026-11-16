@@ -17,6 +17,7 @@ the gateway knows a new key before any client holds it.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import secrets
@@ -25,6 +26,18 @@ log = logging.getLogger("keys")
 
 GATEWAY = "agentgateway-api-keys"
 CLIENTS = "agentgateway-client-keys"
+
+# VSO copies the gateway's map into one Kubernetes Secret, which can't pass 1 MiB (with
+# its metadata). An entry is about 165 bytes there, so some 6,000 keys fit; past
+# WARN_AT the log warns, past LIMIT the map isn't written: the gateway keeps the keys it
+# has and the publisher's failure (status page, alerts) says why.
+LIMIT = 1024 * 1024 - 32 * 1024
+WARN_AT = 768 * 1024
+
+
+def secret_bytes(m: dict[str, str]) -> int:
+    """The size of a map's data in a Secret: its names and base64 values."""
+    return sum(len(k) + len(base64.b64encode(v.encode())) for k, v in m.items())
 
 
 def wanted(lines: str) -> dict[str, str]:
@@ -62,6 +75,13 @@ def reconcile(kv, mount: str, want: dict[str, str], new_key=lambda: secrets.toke
     gateway_diff, clients_diff = _diff(parsed, target), _diff(clients, new_clients)
     if not any(gateway_diff.values()) and not any(clients_diff.values()):
         return None
+    size = secret_bytes(new_gateway)
+    if size > LIMIT:
+        raise ValueError(f"the gateway's key map would be {size} bytes in its Secret, over {LIMIT}: "
+                         f"{len(new_gateway)} keys; not written")
+    if size > WARN_AT:
+        log.warning("the gateway's key map is %d bytes in its Secret (%d keys), near the %d limit",
+                    size, len(new_gateway), LIMIT)
     if any(gateway_diff.values()):
         kv.kv_put(mount, GATEWAY, new_gateway)
         wrote(GATEWAY, gateway_diff)
