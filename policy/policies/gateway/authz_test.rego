@@ -92,6 +92,12 @@ test_google_api_for_gcp_classes if {
 	not authz.allow with input as req("open-webui", "/google/tts", {})
 }
 
+test_google_api_refusals_say_why if {
+	authz.reason == "Google API tts is not allowed for project model-onboarding (its placement, gcp, is not one of the project's: onprem)" with input as req("model-onboarding", "/google/tts/v1/voices", {})
+	authz.reason == "Google API unknown is not in the catalog" with input as req("open-webui", "/google/unknown/v1/x", {})
+	authz.reason == "a Google API path is /google/<api>/<the API's own path>" with input as req("open-webui", "/google/tts", {})
+}
+
 test_models_listing if {
 	authz.allow with input as req("holmes", "/v1/models", {})
 	authz.allow with input as req("holmes", "/v1/models?limit=5", {})
