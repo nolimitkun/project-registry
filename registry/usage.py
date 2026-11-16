@@ -262,9 +262,15 @@ WITH raw AS (
 )
 SELECT ts, CAST(ts AS DATE) AS date, n.project, n.key_id, k.agent, n.protocol,
        -- what the request was: a model call, a list of models (/v1/models: clients probe
-       -- it often), an MCP message, or something else the project's key opened
-       CASE WHEN n.protocol = 'mcp' THEN 'mcp' WHEN n.path LIKE '%/models' THEN 'list'
-            WHEN n.protocol = 'llm' THEN 'model' ELSE 'other' END AS kind,
+       -- it often), an MCP message, or something else the project's key opened. A call
+       -- OPA refused never reached the gateway's LLM or MCP handling (protocol http,
+       -- reason DirectResponse), so its path tells what it was; its model or tool is not
+       -- in the log
+       CASE WHEN n.protocol = 'mcp' OR n.path = '/mcp' OR n.path LIKE '/mcp/%' THEN 'mcp'
+            WHEN n.path LIKE '%/models' THEN 'list'
+            WHEN n.protocol = 'llm' OR regexp_matches(coalesce(n.path, ''),
+                 '^/v1/(chat/completions|completions|embeddings|messages|responses)$') THEN 'model'
+            ELSE 'other' END AS kind,
        n.model, n.virtual_model,
        m.placement, coalesce(m.provider, n.provider) AS provider,
        -- denied and limited: the gateway's own answers (OPA's 403, the rate limit's 429); the
@@ -409,7 +415,7 @@ def report(reader: Reader, visible: set[str] | None, start: dt.date, end: dt.dat
     gateway charged; tokens and requests count model calls."""
     where, params = _where(visible, project)
     q = lambda sql, s=start, e=end: reader.query("daily", s, e, sql.replace("{where}", where), params)  # noqa: E731
-    model = "kind = 'model'"
+    model = "kind = 'model' AND outcome <> 'denied'"     # the model calls OPA let through; denied counts the rest
     totals = q(f"""SELECT coalesce(sum(cost_usd), 0) AS cost_usd,
                           coalesce(sum(requests) FILTER ({model}), 0) AS requests,
                           coalesce(sum(input_tokens + output_tokens) FILTER ({model}), 0) AS tokens,
