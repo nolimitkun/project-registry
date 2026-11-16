@@ -209,15 +209,26 @@ is `cheapest`. Authorization never reads it.
 ### Limits and budgets outside OPA
 
 Limits and budgets are counters, not policy, so they live in a global rate-limit
-service (`envoyproxy/ratelimit`, with Redis), not in OPA. `gen-projects.py`
-generates its config from the projects' `limits` and `budget`. The gateway
-sends three descriptors per request:
+service (`envoyproxy/ratelimit`, with Redis), not in OPA. The values do come
+from OPA: the allow decision carries them, and the gateway sends each as its
+descriptor's `limitOverride`, so the service's config lists no project. The
+gateway sends three descriptors per request, for each kind of counter:
 
-| Descriptor | Unit | Counted |
+| Descriptor kind | Unit | Counted |
 |------------|------|---------|
 | `requests` | Requests | before the call |
 | `tokens` | Tokens | when the call completes |
 | `budget_micro_usd` | Tokens, cost `int(llm.cost.total * 1e6)` | when the call completes |
+
+- **Per project and per key:** each kind is counted twice, under
+  `(project, kind)` with the project's `limits` and `budget`, and under
+  `(project, key_id, kind)` with the key's own (`key_limits`, `key_*` in the
+  decision). Either one used up answers 429. A key's own limit may only be
+  lower than the project's (gen-projects.py checks); a key without one is sent
+  as unlimited.
+- **Order of rollout:** the gateway refuses a call whose override is missing,
+  so the policy that sends `key_*` must be live before the gateway's per-key
+  descriptors are.
 
 - **When counts happen:** tokens and cost are known only after a call, so the
   call that crosses a limit finishes and the next one gets 429.

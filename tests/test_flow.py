@@ -211,6 +211,11 @@ def test_metrics_and_export(world, monkeypatch):
     client = TestClient(app)
     m = client.get("/metrics").text
     assert '# TYPE project_budget_usd gauge' in m and 'project_budget_usd{project="admin"} 25.0' in m
+    assert '# TYPE key_budget_usd gauge' in m and "key_budget_usd{" not in m      # no key has a budget of its own
+    with db.tx() as c:                               # a key with one
+        c.execute("""update resource set spec = spec || '{"key_limits": {"admin": {"budget": {"usd_per_30_days": 2}}}}'::jsonb
+                     where kind = 'project' and id = 'admin'""")
+    assert 'key_budget_usd{project="admin",key_id="admin"} 2.0' in client.get("/metrics").text
     assert ('model_price_usd_per_million_tokens{model="gemini-3.5-flash",'
             'gen_ai_request_model="gemini-3.5-flash",gen_ai_token_type="output"}') in m
     # a KServe model under the name its route sends, as the gateway's metrics carry it

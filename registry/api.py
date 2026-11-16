@@ -11,6 +11,7 @@ publisher itself (policy.py) and approved here the same way.
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import subprocess
 import tempfile
@@ -31,6 +32,8 @@ from . import bundles, insight
 from .bundles import Store
 from .policy import same_data
 from .render import Renderer, RenderError, kagent_wiring_from_env, renderer_from_env
+
+log = logging.getLogger("api")
 
 KINDS = {"projects": "project", "agents": "agent", "exceptions": "exception",
          # the catalog: proposed by the platform team (portal.may_submit)
@@ -489,7 +492,8 @@ def create_app(reg: Registry) -> FastAPI:
         budgets = {pid: (p.get("budget") or {}).get("usd_per_30_days") for pid, p in records["project"].items()}
         prices = {m: spec.get("price") for m, spec in records.get("model", {}).items()}
         out = usage.report(reg.usage, visible, start_d, end_d, end_d, project, budgets, prices,
-                           os.environ.get("USAGE_REFERENCE_MODEL", "gemini-3.5-flash"))
+                           os.environ.get("USAGE_REFERENCE_MODEL", "gemini-3.5-flash"),
+                           key_budgets(records["project"].values()))
         out["projects"] = sorted(records["project"]) if visible is None else sorted(visible)
         return out
 
@@ -511,6 +515,11 @@ def create_app(reg: Registry) -> FastAPI:
                                "order by seq desc limit 1").fetchone()
         return {"revision": active["revision"] if active else None, **records}
 
+    def key_budgets(projects) -> dict[str, float]:
+        """key id -> its own budget (key_limits), for the keys that have one."""
+        return {k: kl["budget"]["usd_per_30_days"] for p in projects
+                for k, kl in (p.get("key_limits") or {}).items() if (kl.get("budget") or {}).get("usd_per_30_days")}
+
     @app.get("/metrics", response_class=PlainTextResponse, dependencies=[Depends(internal_only)])
     def metrics():
         """Prometheus: each project's budget (USD per 30 days), for one alert rule over all
@@ -527,6 +536,24 @@ def create_app(reg: Registry) -> FastAPI:
             usd = (r["spec"].get("budget") or {}).get("usd_per_30_days")
             if usd is not None:
                 lines.append(f'project_budget_usd{{project="{r["id"]}"}} {float(usd)}')
+        # Keys with a budget of their own (key_limits), and what each spent in the last 30
+        # days by the ledger: the gateway's metrics have no key label (high cardinality),
+        # so the alert on a key's budget compares these two. As current as the ledger,
+        # which the usage job extracts every hour.
+        owner = {k: r["id"] for r in rows for k in (r["spec"].get("key_limits") or {})}
+        kb = key_budgets(r["spec"] for r in rows)
+        lines += ["# HELP key_budget_usd A key's own spend cap in USD per 30-day window.",
+                  "# TYPE key_budget_usd gauge"]
+        lines += [f'key_budget_usd{{project="{owner[k]}",key_id="{k}"}} {float(v)}' for k, v in sorted(kb.items())]
+        if kb and reg.usage is not None:
+            try:
+                spent = usage.key_spend_30d(reg.usage, sorted(kb), dt.datetime.now(dt.timezone.utc).date())
+            except Exception as e:          # the rest of the page still answers
+                log.warning("key spend: %s", e)
+            else:
+                lines += ["# HELP key_spend_30d_usd What a key with its own budget spent in the last 30 days (usage ledger).",
+                          "# TYPE key_spend_30d_usd gauge"]
+                lines += [f'key_spend_30d_usd{{project="{owner[k]}",key_id="{k}"}} {v}' for k, v in sorted(spent.items())]
         # Labelled like the gateway's token and cost metrics: the model name the provider
         # got (a KServe model's servedModel: its route replaces the catalog name), and the
         # token type.
