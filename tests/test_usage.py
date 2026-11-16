@@ -49,7 +49,7 @@ AUTO = line("2026-11-15T10:07:00Z", **{
     "agw.ai.usage.cost.total": "0.0000231"})
 DENIED = line("2026-11-15T10:08:00Z", **{
     "trace.id": "t4", "span.id": "s4", "project": "open-webui", "key_id": "open-webui", "http.status": "403",
-    "protocol": "http", "reason": "DirectResponse", "duration": "1ms"})
+    "protocol": "http", "reason": "DirectResponse", "duration": "1ms", "http.path": "/v1/chat/completions"})
 OTHER = line("2026-11-15T10:09:00Z", **{"trace.id": "t5", "span.id": "s5", "protocol": "http", "http.path": "/healthz"})
 
 RECORDS = {
@@ -110,7 +110,8 @@ def test_a_run_names_models_as_the_catalog_and_joins_agents_and_budgets(bucket):
     a = rows[("admin", "gemini-3.5-flash-lite", "ok")]              # auto: the model it chose, and the virtual one
     assert (a["virtual_model"], a["agent"], a["placement"]) == ("auto-general", None, "gcp")
     assert rows[("admin", "gemini-3.8-flash", "ok")]["cost_usd"] == pytest.approx(0.00023175)
-    assert {r["kind"] for r in rows.values()} == {"model", "other"}   # the 403 never reached a model
+    # the 403 never reached the LLM handling (no model in the log): a model call by its path
+    assert rows[("open-webui", None, "denied")]["kind"] == "model"
     listing = line("2026-11-15T10:10:00Z", **{"trace.id": "t6", "span.id": "s6", "project": "admin", "key_id": "admin",
                                               "http.path": "/v1/models"})
     usage.run(bucket, loki([CLOUD, listing]), RECORDS, OWNERS, now=NOW, backfill=3)
@@ -128,6 +129,13 @@ def test_an_mcp_tool_is_named_as_the_catalog_does(bucket):
     usage.run(bucket, loki([call]), RECORDS, OWNERS, now=NOW, backfill=3)
     [req] = usage.requests_of(usage.Reader(bucket), "admin", dt.date(2026, 11, 15))
     assert (req["kind"], req["mcp_method"], req["mcp_tool"]) == ("mcp", "tools/call", "grafana_list_datasources")
+    refused = line("2026-11-15T10:14:00Z", **{"trace.id": "m2", "span.id": "m2", "project": "admin", "key_id": "admin",
+                                              "protocol": "http", "reason": "DirectResponse", "http.status": "403",
+                                              "route": "mini-platform/platform-mcp", "http.path": "/mcp"})
+    usage.run(bucket, loki([call, refused]), RECORDS, OWNERS, now=NOW, backfill=3)
+    rows = usage.requests_of(usage.Reader(bucket), "admin", dt.date(2026, 11, 15))
+    assert {(r["kind"], r["outcome"], r["mcp_tool"]) for r in rows} == {
+        ("mcp", "ok", "grafana_list_datasources"), ("mcp", "denied", None)}   # OPA refused it before MCP parsing
 
 
 def test_raw_files_from_before_a_column_existed_still_read(bucket, tmp_path):
