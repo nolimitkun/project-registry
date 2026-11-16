@@ -86,9 +86,11 @@ google_api := parts[2] if {
 google_path if startswith(path, "/google/")
 
 # MCP (the merged endpoint at /mcp). A project with mcp_tools may open
-# sessions, list tools and so on; each tools/call must name a tool matching one
-# of its patterns. Tool names carry the target as a prefix, e.g.
-# grafana_query_prometheus.
+# sessions, list tools and so on; each tools/call must name a catalog tool
+# matching one of its patterns. Tool names carry the target as a prefix, e.g.
+# grafana_query_prometheus. A name the catalog doesn't list is refused for
+# every key: new or renamed tools stay out of reach until someone has
+# classified them.
 allow if {
 	authenticated
 	mcp_path
@@ -100,10 +102,21 @@ allow if {
 allow if {
 	authenticated
 	tool_call
-	some pattern in project.mcp_tools
-	glob.match(pattern, [], input.parsed_body.params.name)
-	agent_allows_tool(input.parsed_body.params.name)
+	tool_allowed(input.parsed_body.params.name)
 }
+
+tool_allowed(name) if {
+	lib.catalog.tools[name]
+	some pattern in project.mcp_tools
+	glob.match(pattern, [], name)
+	agent_allows_tool(name)
+}
+
+# The tools this key may call, sent with the allow decision for /mcp: the
+# gateway's MCP authorization (agentgateway-config mcp.yaml) keeps only these in
+# tools/list, so a project sees the tools it can use. Authorization above still
+# decides each call.
+listed_tools := sort([t | some t, _ in lib.catalog.tools; tool_allowed(t)])
 
 # An agent's key needs MCP tools of its own; the project's other keys don't.
 agent_may_use_mcp if not agent_id
@@ -129,11 +142,7 @@ agent_tool_matches(name) if {
 # The registry's autonomy setting.
 autonomy_risks := lib.settings.autonomy
 
-# A tool the catalog doesn't list counts as irreversible: new or renamed tools
-# stay out of agents' reach until someone has classified them.
 tool_risk(name) := lib.catalog.tools[name]
-
-tool_risk(name) := "irreversible" if not lib.catalog.tools[name]
 
 mcp_path if {
 	parts := split(path, "/")
@@ -178,6 +187,9 @@ reason := "unknown project" if {
 	agent_id
 } else := sprintf("model %v is not allowed for project %v (%v data)", [input.parsed_body.model, project_id, project.data_class]) if {
 	model_path
+} else := sprintf("tool %v is not in the catalog", [input.parsed_body.params.name]) if {
+	tool_call
+	not lib.catalog.tools[input.parsed_body.params.name]
 } else := sprintf("tool %v is %v: agent %v (%v) needs a human approval for it", [input.parsed_body.params.name, tool_risk(input.parsed_body.params.name), agent_id, agent.autonomy]) if {
 	tool_call
 	agent_tool_matches(input.parsed_body.params.name)
@@ -223,6 +235,12 @@ decision := {
 } if {
 	allow
 	path == "/v1/models"
+} else := {
+	"allowed": true,
+	"dynamic_metadata": object.union(limits, {"mcp_tools": listed_tools}),
+} if {
+	allow
+	mcp_path
 } else := {"allowed": true, "dynamic_metadata": limits} if allow
 
 # The project's limits travel with the allow decision (docs/project-registry.md

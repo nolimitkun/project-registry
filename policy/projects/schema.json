@@ -98,7 +98,7 @@
       }
     },
     "key_limits": {
-      "description": "Limits and budget of single keys, on top of the project's: a call counts against both, and either refuses it (429) once used up. Keyed by key id: one of the project's keys or of its agents' (agents/*.yaml). Each value may not exceed the project's own for the same limit, so lowering the project's below a key's needs the key's lowered in the same change. A key dropped from the project or its agent must be dropped here too. A limit a key does not set: only the project's applies.",
+      "description": "Limits and budget of single keys, on top of the project's: a call counts against both, and either refuses it (429) once used up. Keyed by key id: one of the project's keys or of its agents' (agents/*.yaml). Each value may not exceed the project's own for the same limit, so lowering the project's below a key's needs the key's lowered in the same change. A key dropped from the project's keys is dropped here with it (the registry does it); one dropped from an agent must be dropped here in a change of its own first. A limit a key does not set: only the project's applies.",
       "type": "object",
       "propertyNames": {"pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"},
       "additionalProperties": {

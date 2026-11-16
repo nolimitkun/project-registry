@@ -312,13 +312,32 @@ test_read_only_agent_never_writes if {
 		with data.agents.holmes.autonomy as "read-only"
 }
 
-# A tool the catalog doesn't know is irreversible for agents...
-test_unclassified_tool_refused_for_agents if {
+# A tool the catalog doesn't know is refused for every key, with a reason.
+test_unclassified_tool_refused if {
 	not authz.allow with input as mcp("holmes", {"method": "tools/call", "params": {"name": "grafana_brand_new_tool"}})
 		with data.agents.holmes.autonomy as "autonomous"
+	not authz.allow with input as mcp("kagent", {"method": "tools/call", "params": {"name": "grafana_brand_new_tool"}})
+	authz.reason == "tool grafana_brand_new_tool is not in the catalog" with input as mcp("kagent", {"method": "tools/call", "params": {"name": "grafana_brand_new_tool"}})
+	authz.reason == "tool grafana_brand_new_tool is not in the catalog" with input as mcp("holmes", {"method": "tools/call", "params": {"name": "grafana_brand_new_tool"}})
 }
 
-# ...while a project's own key keeps its glob rules (no autonomy to apply).
+# The allow decision for /mcp lists the tools the key may call, for tools/list.
+test_mcp_decision_lists_callable_tools if {
+	d := authz.decision with input as mcp("kagent", {"method": "tools/list"})
+	tools := d.dynamic_metadata.mcp_tools
+	"grafana_query_prometheus" in tools
+	"grafana_update_dashboard" in tools
+	every t in tools { lib.catalog.tools[t] }
+	d.dynamic_metadata.requests_per_minute
+	h := authz.decision with input as mcp("holmes", {"method": "tools/list"})
+	"grafana_query_loki_logs" in h.dynamic_metadata.mcp_tools
+	not "grafana_update_dashboard" in h.dynamic_metadata.mcp_tools
+	not "kagent-tools_k8s_get" in h.dynamic_metadata.mcp_tools
+	m := authz.decision with input as req("kagent", "/v1/models", null)
+	not m.dynamic_metadata.mcp_tools
+}
+
+# A project's own key keeps its glob rules (no autonomy to apply).
 test_project_key_unaffected_by_tool_risk if {
 	authz.allow with input as mcp("kagent", {"method": "tools/call", "params": {"name": "grafana_update_dashboard"}})
 }

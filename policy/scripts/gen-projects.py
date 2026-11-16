@@ -196,7 +196,7 @@ def check_key_limits(pid, p, errors):
     for key_id, kl in p["key_limits"].items():
         where = f"projects/{pid}.yaml: key_limits.{key_id}"
         if key_id not in p["keys"]:
-            errors.append(f"{where}: not one of the project's keys or its agents' {sorted(p['keys'])}")
+            errors.append(f"{where}: not one of the project's keys or its agents' {sorted(p['keys'])} (a key that is gone needs its entry dropped)")
         own = {**(kl.get("limits") or {}), **(kl.get("budget") or {})}
         for name, value in sorted(own.items()):
             if project.get(name) is not None and value > project[name]:
