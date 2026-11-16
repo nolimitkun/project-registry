@@ -49,7 +49,8 @@ AUTO = line("2026-11-15T10:07:00Z", **{
     "agw.ai.usage.cost.total": "0.0000231"})
 DENIED = line("2026-11-15T10:08:00Z", **{
     "trace.id": "t4", "span.id": "s4", "project": "open-webui", "key_id": "open-webui", "http.status": "403",
-    "protocol": "http", "reason": "DirectResponse", "duration": "1ms", "http.path": "/v1/chat/completions"})
+    "protocol": "http", "reason": "DirectResponse", "duration": "1ms", "http.path": "/v1/chat/completions",
+    "refused.model": '"gemini-3.8-flash"'})
 OTHER = line("2026-11-15T10:09:00Z", **{"trace.id": "t5", "span.id": "s5", "protocol": "http", "http.path": "/healthz"})
 
 RECORDS = {
@@ -104,14 +105,14 @@ def test_a_run_names_models_as_the_catalog_and_joins_agents_and_budgets(bucket):
     assert state["days"] == {"2026-11-15": 4} and state["through"] == "2026-11-15T11:30:00+00:00"   # the run's time
     rows = {(r["project"], r["model"], r["outcome"]): r for r in daily(bucket)}
     assert set(rows) == {("admin", "gemini-3.8-flash", "ok"), ("admin", "gemini-3.5-flash-lite", "ok"),
-                         ("kagent", "qwen3.6-27b", "ok"), ("open-webui", None, "denied")}
+                         ("kagent", "qwen3.6-27b", "ok"), ("open-webui", "gemini-3.8-flash", "denied")}
     q = rows[("kagent", "qwen3.6-27b", "ok")]                       # the served name, back to the catalog's
     assert (q["agent"], q["placement"], q["cost_usd"], q["output_tokens"]) == ("kagent-k8s-agent", "onprem", 0, 18)
     a = rows[("admin", "gemini-3.5-flash-lite", "ok")]              # auto: the model it chose, and the virtual one
     assert (a["virtual_model"], a["agent"], a["placement"]) == ("auto-general", None, "gcp")
     assert rows[("admin", "gemini-3.8-flash", "ok")]["cost_usd"] == pytest.approx(0.00023175)
-    # the 403 never reached the LLM handling (no model in the log): a model call by its path
-    assert rows[("open-webui", None, "denied")]["kind"] == "model"
+    # the 403 never reached the LLM handling: a model call by its path, named from its body
+    assert rows[("open-webui", "gemini-3.8-flash", "denied")]["kind"] == "model"
     listing = line("2026-11-15T10:10:00Z", **{"trace.id": "t6", "span.id": "s6", "project": "admin", "key_id": "admin",
                                               "http.path": "/v1/models"})
     usage.run(bucket, loki([CLOUD, listing]), RECORDS, OWNERS, now=NOW, backfill=3)
@@ -131,11 +132,13 @@ def test_an_mcp_tool_is_named_as_the_catalog_does(bucket):
     assert (req["kind"], req["mcp_method"], req["mcp_tool"]) == ("mcp", "tools/call", "grafana_list_datasources")
     refused = line("2026-11-15T10:14:00Z", **{"trace.id": "m2", "span.id": "m2", "project": "admin", "key_id": "admin",
                                               "protocol": "http", "reason": "DirectResponse", "http.status": "403",
-                                              "route": "mini-platform/platform-mcp", "http.path": "/mcp"})
+                                              "route": "mini-platform/platform-mcp", "http.path": "/mcp",
+                                              "refused.tool": '"kagent-tools_k8s_get_resources"'})
     usage.run(bucket, loki([call, refused]), RECORDS, OWNERS, now=NOW, backfill=3)
     rows = usage.requests_of(usage.Reader(bucket), "admin", dt.date(2026, 11, 15))
     assert {(r["kind"], r["outcome"], r["mcp_tool"]) for r in rows} == {
-        ("mcp", "ok", "grafana_list_datasources"), ("mcp", "denied", None)}   # OPA refused it before MCP parsing
+        ("mcp", "ok", "grafana_list_datasources"),
+        ("mcp", "denied", "kagent-tools_k8s_get_resources")}       # OPA refused it before MCP parsing: from its body
 
 
 def test_raw_files_from_before_a_column_existed_still_read(bucket, tmp_path):
@@ -146,6 +149,12 @@ def test_raw_files_from_before_a_column_existed_still_read(bucket, tmp_path):
     (tmp_path / "cur.parquet").write_bytes(bucket.get("raw/date=2026-11-15/hour=10.parquet"))
     con.execute(f"COPY (SELECT * EXCLUDE (mcp_target) FROM read_parquet('{tmp_path / 'cur.parquet'}')) TO '{old}' (FORMAT parquet)")
     bucket.put("raw/date=2026-11-15/hour=10.parquet", old.read_bytes())
+    assert usage.transform(bucket, dt.date(2026, 11, 15), tmp_path) == 1
+    # a day whose every file predates a column: the files from before refused.model
+    for k in list(usage.Reader(bucket).bucket.list("raw/date=2026-11-15/")):
+        (tmp_path / "cur.parquet").write_bytes(bucket.get(k))
+        con.execute(f"COPY (SELECT * EXCLUDE (refused_model, refused_tool) FROM read_parquet('{tmp_path / 'cur.parquet'}')) TO '{old}' (FORMAT parquet)")
+        bucket.put(k, old.read_bytes())
     assert usage.transform(bucket, dt.date(2026, 11, 15), tmp_path) == 1
 
 
