@@ -211,8 +211,9 @@ is `cheapest`. Authorization never reads it.
 Limits and budgets are counters, not policy, so they live in a global rate-limit
 service (`envoyproxy/ratelimit`, with Redis), not in OPA. The values do come
 from OPA: the allow decision carries them, and the gateway sends each as its
-descriptor's `limitOverride`, so the service's config lists no project. The
-gateway sends three descriptors per request, for each kind of counter:
+descriptor's `limitOverride`, so the service's config lists no project. There
+are three kinds of counter, each sent twice per request (project and key, below),
+six descriptors in all:
 
 | Descriptor kind | Unit | Counted |
 |------------|------|---------|
