@@ -7,8 +7,8 @@
 Lists the tools the gateway's merged /mcp endpoint announces, with the admin
 project's key, and reports:
 
-  new        announced, not in the catalog: agents can't call it (it counts as
-             irreversible) until someone classifies it (a tool record)
+  new        announced, not in the catalog: no key can call it until someone
+             classifies it (a tool record)
   removed    in the catalog, no longer announced
   changed    its description or input schema changed since it was classified
              (fingerprint): check the risk still holds, then update it
@@ -139,7 +139,7 @@ def list_tools(url, key):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--gateway", help="gateway base URL; default: kubectl port-forward svc/agentgateway-proxy")
-    parser.add_argument("--key-id", default="admin", help="key id to list tools with (needs mcp_tools: ['*'])")
+    parser.add_argument("--key-id", default="admin", help="key id to list tools with (a project key with mcp_tools: ['*'], whose tools/list is unfiltered)")
     parser.add_argument("--tools", type=Path, help="records file (the registry's /export format); default: the registry")
     args = parser.parse_args()
 

@@ -337,6 +337,15 @@ test_mcp_decision_lists_callable_tools if {
 	not m.dynamic_metadata.mcp_tools
 }
 
+# A project key with "*" lists everything, new tools too (tools-drift.py).
+test_wildcard_project_key_lists_everything if {
+	d := authz.decision with input as mcp("kagent", {"method": "tools/list"})
+		with data.projects.kagent.mcp_tools as ["*"]
+	d.allowed
+	not d.dynamic_metadata.mcp_tools
+	d.dynamic_metadata.requests_per_minute
+}
+
 # A project's own key keeps its glob rules (no autonomy to apply).
 test_project_key_unaffected_by_tool_risk if {
 	authz.allow with input as mcp("kagent", {"method": "tools/call", "params": {"name": "grafana_update_dashboard"}})

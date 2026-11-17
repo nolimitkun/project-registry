@@ -112,11 +112,19 @@ tool_allowed(name) if {
 	agent_allows_tool(name)
 }
 
-# The tools this key may call, sent with the allow decision for /mcp: the
-# gateway's MCP authorization (agentgateway-config mcp.yaml) keeps only these in
-# tools/list, so a project sees the tools it can use. Authorization above still
-# decides each call.
+# The tools this key may call, sent with the allow decision for /mcp as
+# mcp_tools: the gateway's MCP authorization (agentgateway-config mcp.yaml) keeps
+# only these in tools/list, so a project sees the tools it can use.
+# Authorization above still decides each call. A project key with "*" gets no
+# list, so tools/list shows it everything the servers announce: the catalog's
+# tools and any new one, which is how scripts/tools-drift.py finds tools to
+# classify (it can't call them).
 listed_tools := sort([t | some t, _ in lib.catalog.tools; tool_allowed(t)])
+
+mcp_metadata := {} if {
+	not agent_id
+	"*" in project.mcp_tools
+} else := {"mcp_tools": listed_tools}
 
 # An agent's key needs MCP tools of its own; the project's other keys don't.
 agent_may_use_mcp if not agent_id
@@ -237,13 +245,13 @@ decision := {
 	path == "/v1/models"
 } else := {
 	"allowed": true,
-	"dynamic_metadata": object.union(limits, {"mcp_tools": listed_tools}),
+	"dynamic_metadata": object.union(limits, mcp_metadata),
 } if {
 	allow
 	mcp_path
 } else := {"allowed": true, "dynamic_metadata": limits} if allow
 
-# The project's limits travel with the allow decision (docs/project-registry.md
+# The project's limits travel with the allow decision (docs/design.md
 # "Limits travel with the decision"): agentgateway reads them as extauthz.* and
 # sends each to the rate-limit service as the descriptor's limitOverride
 # (agentgateway-config ratelimit.yaml), so a limit change goes live with the
