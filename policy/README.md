@@ -35,7 +35,7 @@ their format and the renderers.
    - it builds and signs the bundle;
    - it replays recent decisions under the active bundles and under the new ones.
 
-   A commit that changes nothing in `policy/` (the registry's code only) is followed with no request: the same bundle under the new commit. One that changes only docs or CI here, and neither bundle, is recorded as `skipped`.
+   A commit that changes nothing in `policy/` (the registry's code only) is followed with no request: the same bundle under the new commit. One that changes only files no publish reads (docs, CI, the test fixtures, and the scripts run by hand or in CI: `validate.sh`, `policy-replay.py`, `tools-drift.py`, `render-records.py`; `registry/policy.py` `INERT`), and neither bundle, is recorded as `skipped`.
 3. The approvers decide in the registry's portal, where they read the diff file by file. `portal.rego` (the active one) says who approves: the platform team and security. Then the registry publishes the bundle, and OPA verifies its signature and loads it.
 
 **What the gateway takes from here**, through the project registry, not a pin: the

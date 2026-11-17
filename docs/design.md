@@ -181,9 +181,9 @@ Today's approvals setting, with the floors:
 |------------|-------------|
 | Add or remove models within the data class, lower a limit, edit a description | the project owner |
 | Raise a limit or the budget | plus the cost owner (a key's own limits, which stay within the project's, need only the project owner) |
-| Change `data_class` or widen the placement, add an exception, a wildcard in `mcp_tools`, raise an agent's `autonomy` (or give it more tool risks) | plus security |
+| Change `data_class` or widen the placement, add an exception, a wildcard in `mcp_tools`, create an agent beyond `read-only` or raise an agent's `autonomy` (or give it more tool risks) | plus security |
 | Create a project | the platform team and security |
-| A model or Google API: new, placement or provider; a tool made less risky; the MCP targets or serving namespaces | the platform team and security |
+| A model or Google API: new, or any change but its price; a tool made less risky, or a new one classed below `irreversible`; the MCP targets or serving namespaces | the platform team and security |
 | A model's price | the platform team and the cost owner |
 | A policy commit, or a setting | the platform team and security (floors) |
 
@@ -358,6 +358,13 @@ GET    /changes/{id}                  the diff, approvals needed and given, repl
 GET    /changes/{id}/diff             a policy change's files with unified diffs (the portal shows them)
 POST   /changes/{id}/approve|reject   (body: {"comment": ...})
 POST   /changes/{id}/withdraw         its author or the platform team, before it is published
+POST   /changes/preview               what a submit would file (checked as a submit is: who must
+                                      approve, the change field by field), without filing it
+GET    /me                            the caller's name and groups (the portal shows what fits them)
+GET    /usage                         spend and usage of a date range (default the last 30 days), per
+                                      project, agent, key and model, for the projects the caller may see
+GET    /usage/requests                a project's requests of one day, the dearest first
+GET    /portal/                       the portal; /portal/config.json is where the browser logs in
 GET    /projects/{id}/effective       what it can use now, asked of the gateway's OPA (data.gateway.lib)
 GET    /status                        OPA's loaded bundles against the published ones, publisher outputs,
                                       the usage ledger, the gateway's and the registry's alerts
@@ -369,7 +376,7 @@ GET    /export                        every record (the format of the seed and t
 GET    /internal/bundles/{bundle}     the active bundle, for policy-replay.py (cluster-internal)
 GET    /metrics                       project_budget_usd, key_budget_usd and key_spend_30d_usd, model_price_usd_per_million_tokens and each publisher output's health, for Prometheus (cluster-internal)
 POST   /rollback/{revision}           platform team only
-POST   /opa/status                    OPA's status reports (cluster-internal)
+POST   /opa/status[/{partition}]      OPA's status reports (cluster-internal)
 GET    /healthz
 ```
 
