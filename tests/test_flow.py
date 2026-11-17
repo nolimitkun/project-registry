@@ -167,6 +167,26 @@ def test_key_limits_only_narrow_the_projects_keys(world):
     assert ch["state"] in ("pending_approval", "approved")
 
 
+def test_dropping_a_key_drops_its_key_limits(world):
+    db, reg = world["db"], world["reg"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    with db.tx() as c:
+        c.execute("""update resource set spec = spec || '{"keys": ["admin", "admin-2", "admin-3"],
+                     "key_limits": {"admin-2": {"limits": {"requests_per_minute": 5}},
+                                    "admin-3": {"limits": {"requests_per_minute": 6}}}}'::jsonb
+                     where kind = 'project' and id = 'admin'""")
+    ch = reg.preview(ALICE, "project", "admin", "update", api.ChangeIn(spec={"keys": ["admin", "admin-3"]}))
+    assert ch["after"]["key_limits"] == {"admin-3": {"limits": {"requests_per_minute": 6}}}
+    ch = reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"keys": ["admin"]}))
+    assert "key_limits" not in ch["after"]
+    # a key the project never had is still an error
+    with db.tx() as c:
+        c.execute("update change_request set state = 'withdrawn' where id = %s", (ch["id"],))
+    with pytest.raises(HTTPException) as e:
+        reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"key_limits": {"nobody": {"limits": {"requests_per_minute": 5}}}}))
+    assert e.value.status_code == 422 and "not one of the project's keys" in str(e.value.detail)
+
+
 def test_a_failed_replay_publishes_nothing(world, monkeypatch):
     db, store, reg, pub = world["db"], world["store"], world["reg"], world["pub"]
     first = importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)

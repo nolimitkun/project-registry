@@ -85,7 +85,7 @@ flowchart LR
 | 11 | **Alerts**: budget forecast, project rate-limited, provider throttling, generated from the projects; promtool in CI | #36, #37, #38 |
 | 12 | **Two bundles** (`gateway-policy`, `gateway-projects` with one file per project); the rate limiter refuses unknown projects; decision log keeps the model; `policy-replay.py` | #42 |
 | 13 | **Agents** `agents/<id>.yaml`: per-agent keys narrowing their project's models and tools; kagent's agents on their own ModelConfigs; published in agentregistry | #44 |
-| 14 | **Tool risk**: `catalog/tools.yaml` classes every MCP tool read, write or irreversible; OPA holds agents to their autonomy; unknown tools count as irreversible; `tools-drift.py` | #45 |
+| 14 | **Tool risk**: `catalog/tools.yaml` classes every MCP tool read, write or irreversible; OPA holds agents to their autonomy; unknown tools count as irreversible (since refused for every key, with a reason); `tools-drift.py` | #45 |
 | 15 | **Self-hosted models on KServe**: catalog provider `KServe` routes a model name to a release's InferencePool; projects with `deployments: true` may call `/<serving namespace>/...` directly (the onboarding pipeline); weights in MinIO `models` | — |
 
 ## Decisions

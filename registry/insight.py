@@ -19,8 +19,8 @@ log = logging.getLogger("insight")
 
 # One ad-hoc query (OPA's /v1/query), every binding from the same rules authz.rego and
 # select.rego use. A project OPA doesn't have yet leaves `published` null and the rest
-# empty. Tools are the catalog's (a tool it doesn't list counts as irreversible and is
-# out of agents' reach, authz.rego tool_risk), matched as authz.rego matches them.
+# empty. Tools are the catalog's (a tool it doesn't list is refused for every key,
+# authz.rego tool_allowed), matched as authz.rego matches them.
 EFFECTIVE = """
 p := input.project
 published := object.get(data.projects, p, null)
@@ -157,6 +157,7 @@ HINTS = [
     (r"may not call model deployments directly$", "Only a project with deployments set (the onboarding pipeline) may, and never with an agent's key."),
     (r"^model .* is not allowed for agent ", "Widen the agent's models patterns; it can never go past its project's."),
     (r"^model .* is not allowed for project ", "The model's placement must be one the project's data class and placements allow, and match its models patterns; otherwise an exception, which security approves."),
+    (r"^tool .* is not in the catalog", "Only the catalog's tools can be called; a new or renamed tool needs a catalog entry (its risk) first."),
     (r"^tool .* needs a human approval", "The agent's autonomy does not let it call a tool of this risk without a human, and the gateway has no approval path yet: raise its autonomy, or leave the call to a person."),
     (r"^tool .* is not allowed for agent ", "Add a pattern for it to the agent's MCP tools; it must match the project's too."),
     (r"^tool .* is not allowed for project ", "Add a pattern for it to the project's MCP tools."),

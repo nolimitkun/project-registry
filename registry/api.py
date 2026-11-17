@@ -86,6 +86,19 @@ def merge(base: dict, patch: dict) -> dict:
     return out
 
 
+def drop_gone_keys(before: dict, after: dict) -> dict:
+    """A key dropped from a project's keys takes its own limits (key_limits) along, so
+    removing a key is one step. Only keys the change drops: an entry naming a key the
+    project never had is still the render's error, which catches a misspelt key."""
+    gone = set(before.get("keys") or []) - set(after.get("keys") or [])
+    limits = after.get("key_limits") or {}
+    if not gone & set(limits):
+        return after
+    kept = {k: v for k, v in limits.items() if k not in gone}
+    out = {k: v for k, v in after.items() if k != "key_limits"}
+    return {**out, "key_limits": kept} if kept else out
+
+
 class Registry:
     def __init__(self, db: dbm.DB, renderer: Renderer, store: Store, opa_url: str,
                  policy_bundle="gateway-policy", data_bundle="gateway-projects", signing_keyid: str | None = None,
@@ -151,6 +164,8 @@ class Registry:
             raise HTTPException(404, f"no {kind} {oid}")
         else:
             after = None if op == "delete" else merge(before, body.spec or {})
+            if kind == "project" and after is not None:
+                after = drop_gone_keys(before, after)
         if after == before:
             raise HTTPException(422, "the change changes nothing")
         pending = c.execute("select id from change_request where kind = %s and object_id = %s and "

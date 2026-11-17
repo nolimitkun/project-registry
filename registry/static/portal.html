@@ -793,7 +793,7 @@ async function viewCatalog() {
     el("section", { class: "panel" }, el("h2", {}, "Google APIs"),
       table(["API", "Host", "Placement"], Object.entries(apis).map(([id, a]) => el("tr", {}, el("td", {}, el("strong", {}, id)), el("td", {}, el("code", {}, a.host || "")), el("td", {}, el("span", { class: "chip" }, a.placement || "")))))),
     el("section", { class: "panel" }, el("h2", {}, `MCP tools (${Object.keys(tools).length})`),
-      el("p", { class: "muted" }, `Targets: ${(settings.targets || []).join(", ")}. A tool the catalog doesn't list counts as irreversible.`),
+      el("p", { class: "muted" }, `Targets: ${(settings.targets || []).join(", ")}. A tool the catalog doesn't list is refused for every key.`),
       ["read", "write", "irreversible"].map((r) => toolList(r, (byRisk[r] || []).sort(), r !== "read"))),
     el("section", { class: "panel" }, el("h2", {}, "Serving"), el("p", {}, "Namespaces whose KServe deployments projects with deployments may call: ", chips(settings.servingNamespaces))));
 }
