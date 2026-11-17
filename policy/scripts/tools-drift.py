@@ -11,7 +11,9 @@ project's key, and reports:
              classifies it (a tool record)
   removed    in the catalog, no longer announced
   changed    its description or input schema changed since it was classified
-             (fingerprint): check the risk still holds, then update it
+             (fingerprint): check the risk still holds, then update it. A list
+             in parentheses, "(a, b, c)", is compared as a set: kagent-tools
+             builds some from Go maps, in a new order each start.
 
 Exit code 1 on any drift. For a new or changed tool the record to propose in the
 registry (POST or PATCH /tools/<name>) is printed with its current fingerprint and
@@ -28,6 +30,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -56,10 +59,33 @@ def registry_tools():
 NAMESPACE = "mini-platform"
 
 
-def fingerprint(tool):
-    """sha256 over the description and input schema, first 16 hex digits."""
+PAREN_LIST = re.compile(r"\(([^()]*,[^()]*)\)")
+
+
+def sorted_lists(v):
+    """Every "(a, b, c)" in the strings of v with its items sorted."""
+    if isinstance(v, str):
+        return PAREN_LIST.sub(lambda m: "(" + ", ".join(sorted(x.strip() for x in m.group(1).split(","))) + ")", v)
+    if isinstance(v, dict):
+        return {k: sorted_lists(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [sorted_lists(x) for x in v]
+    return v
+
+
+def fingerprint(tool, order_proof=True):
+    """sha256 over the description and input schema, first 16 hex digits; by default with
+    their parenthesized lists sorted, so a server that reorders one doesn't count as drift."""
     body = {"description": tool.get("description", ""), "inputSchema": tool.get("inputSchema", {})}
+    if order_proof:
+        body = sorted_lists(body)
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def unchanged(recorded, tool):
+    """The record's fingerprint matches: the order-proof one, which this script prints, or
+    the plain one, which records made before it carry."""
+    return recorded in (fingerprint(tool), fingerprint(tool, order_proof=False))
 
 
 def gateway_key(key_id):
@@ -151,7 +177,7 @@ def main():
     removed = sorted(set(catalog) - set(live))
     changed = sorted(
         n for n in set(live) & set(catalog)
-        if catalog[n].get("fingerprint") and catalog[n]["fingerprint"] != fingerprint(live[n])
+        if catalog[n].get("fingerprint") and not unchanged(catalog[n]["fingerprint"], live[n])
     )
     print(f"{len(live)} tools announced, {len(catalog)} in the catalog")
     for label, names in (("new", new), ("removed", removed), ("changed", changed)):
