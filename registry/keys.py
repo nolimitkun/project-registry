@@ -1,7 +1,8 @@
 """The gateway's API keys, written to Vault by the registry from its records.
 
 Two maps in Vault's KV, one entry per key id (gen-projects.py --keys lists them with
-their projects):
+their projects), and in the gateway's a rotated key's previous one during its grace
+period (below):
 
 - agentgateway-api-keys: what agentgateway reads (its apiKeysSecret, through VSO), a
   JSON value per key id with the key and the {project, key_id} metadata OPA keys on;
