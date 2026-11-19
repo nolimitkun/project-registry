@@ -462,7 +462,9 @@ data, no export pull requests.
 - **Copies:** the CronJob `project-registry-snapshot` (03:00 UTC) writes every
   record to `registry-snapshots/<time>.json` and `latest.json` in the bundle
   store, and every published data bundle revision is kept. Neither is a backup
-  of the database (approvals, audit log). To take one now:
+  of the database (approvals, audit log, when each gateway key was issued: a
+  restored registry counts every key from the restore, so `GatewayKeyOld` waits
+  90 days from then). To take one now:
   `kubectl -n mini-platform create job --from=cronjob/project-registry-snapshot snapshot-now`.
 - **An empty registry** (the import job, `registry/importer.py`) loads the
   latest snapshot, or on a new cluster the seed,
@@ -474,7 +476,8 @@ data, no export pull requests.
   gets the active data bundle from `/internal/bundles/gateway-projects`.
 - **The gateway's API keys** (`registry/keys.py`). The publisher writes two maps
   in Vault's KV (`GATEWAY_KEYS_MOUNT`), one entry per key id the records list
-  (`gen-projects.py --keys`): `agentgateway-api-keys`, the key and its
+  (`gen-projects.py --keys`), plus a rotated key's previous one in the gateway's
+  map during its grace period (below): `agentgateway-api-keys`, the key and its
   `{project, key_id}` metadata as agentgateway reads them, and
   `agentgateway-client-keys`, the raw keys. Nothing else in Vault holds a gateway
   key: each client's copy (kagent's, an agent's, Open WebUI's, the onboarding
@@ -483,7 +486,8 @@ data, no export pull requests.
   id no record lists is dropped from both maps (revoked), an existing one keeps
   its key; the gateway's map is written first, so the gateway knows a key before a
   client holds it. It runs after each data bundle and every five minutes, which
-  also mends a map edited by hand. Its Vault role may write those two paths and
+  also mends a map edited by hand, and at once for a rotation asked for or a
+  grace period that ends. Its Vault role may write those two paths and
   nothing else in the KV mount.
 - **Rotating a key keeps its key id.** The project's owners or the platform
   team ask for it (portal, `POST /projects/{id}/keys/{key}/rotate`); it is not a

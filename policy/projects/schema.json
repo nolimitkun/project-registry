@@ -112,7 +112,7 @@
       }
     },
     "keys": {
-      "description": "Ids of the project's own API keys. The secrets themselves are in Vault (scripts/bootstrap-vault-secrets.sh). A key whose id is not listed here or by one of the project's agents (agents/*.yaml) is refused. Each id is the project id, or the project id followed by a dash and a suffix. May be empty when every key belongs to an agent.",
+      "description": "Ids of the project's own API keys. The secrets themselves are in Vault: the project registry issues, rotates and revokes them. A key whose id is not listed here or by one of the project's agents (agents/*.yaml) is refused. Each id is the project id, or the project id followed by a dash and a suffix. May be empty when every key belongs to an agent.",
       "type": "array",
       "minItems": 0,
       "uniqueItems": true,

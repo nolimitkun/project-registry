@@ -1,7 +1,9 @@
-"""Waking the publisher when a change is approved.
+"""Waking the publisher when a change is approved, or a gateway key's rotation (or the
+end of its grace period) is asked for.
 
 The API sends NOTIFY in the transaction that approves a change (and queues it in the
-outbox), so the notice arrives only once that commits. The publisher waits for it
+outbox), or that records the rotation in gateway_key, so the notice arrives only once
+that commits. The publisher waits for it
 instead of sleeping between rounds; the outbox stays the record of what to publish, so
 a lost notice (the publisher restarting, the connection dropping) costs only the wait
 until the next round, never a change.

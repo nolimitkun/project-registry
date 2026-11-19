@@ -1,10 +1,11 @@
-"""The registry API and its portal page. Every edit is a change request, proposed
+"""The registry API and its portal page. Every edit of a record is a change request, proposed
 only by whom policy allows (OPA: data.portal.may_submit), validated by rendering
 the whole bundle with it, its approvals decided by policy
 (data.portal.required_approvals; both Rego in the policy repo), approved by
 other people than its author (or withdrawn), then published by the publisher.
 Policy changes (kind `policy`, a commit of the Rego in Git) are filed by the
-publisher itself (policy.py) and approved here the same way.
+publisher itself (policy.py) and approved here the same way. Rotating a gateway key
+is not a change request: the key id, and so every record, stays (keys.py).
 
     uvicorn registry.api:app
 """
@@ -547,7 +548,9 @@ def create_app(reg: Registry) -> FastAPI:
     @app.get("/metrics", response_class=PlainTextResponse, dependencies=[Depends(internal_only)])
     def metrics():
         """Prometheus: each project's budget (USD per 30 days), for one alert rule over all
-        projects; each model's catalog price, for the alert that the gateway's own price
+        projects; each budgeted key's budget and 30 days' spend (key_budget_usd,
+        key_spend_30d_usd), for the alert on a key's budget; when each gateway key was
+        issued, for the alert on old keys; each model's catalog price, for the alert that the gateway's own price
         table (what budgets are charged at) still agrees; and how each publisher output is
         doing (health.py). Cluster-internal, no user token."""
         with reg.db.tx() as c:
