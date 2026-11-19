@@ -317,6 +317,35 @@ class Publisher:
         return revision
 
 
+def keys_due(db) -> bool:
+    """A rotation asked for, or a previous key whose grace period is over."""
+    with db.tx() as c:
+        return c.execute("select exists (select 1 from gateway_key where rotate_requested_at is not null "
+                         "or previous_until <= now()) as due").fetchone()["due"]
+
+
+def write_keys(db, kv, mount: str, wanted) -> dict | None:
+    """One round of the gateway's key maps (keys.py): the key ids the records list
+    (wanted(records)), the rotations asked for and the grace periods (gateway_key)."""
+    with db.tx() as c:
+        records = dbm.resources(c)
+        rows = {r["key_id"]: r for r in c.execute("select * from gateway_key")}
+    cut = dbm.now()
+    rotate = {k: (r["grace_seconds"] or 0) > 0 for k, r in rows.items() if r["rotate_requested_at"]}
+    keep = {k for k, r in rows.items() if r["previous_until"] and r["previous_until"] > cut}
+
+    def wrote(name: str, diff: dict) -> None:       # each map as it is written (key ids only)
+        with db.tx() as c:
+            dbm.audit(c, "publisher", "keys", name, None, diff)
+            if name == keysmod.GATEWAY:             # the gateway has the new keys: record them
+                dbm.keys_issued(c, diff.get("issued") or [], rows)
+    want = wanted(records)
+    out = keysmod.reconcile(kv, mount, want, wrote=wrote, rotate=rotate, keep_previous=keep)
+    with db.tx() as c:
+        dbm.keys_reconciled(c, want, cut)
+    return out
+
+
 def main() -> None:
     import boto3
 
@@ -349,20 +378,17 @@ def main() -> None:
     # Each output is one step per round (health.py): it finishes or raises, and a failure is
     # recorded, served on /metrics and retried, while the other outputs go on.
     def gateway_keys() -> None:
-        """The gateway's key maps in Vault (keys.py), after every data bundle and every
-        five minutes (which also mends a map changed in Vault by hand)."""
+        """The gateway's key maps in Vault (keys.py), after every data bundle, every five
+        minutes (which also mends a map changed in Vault by hand), and at once for a
+        rotation asked for or a previous key whose grace period is over (gateway_key)."""
         nonlocal keyed, keyed_at
         state = (store.active(pub.policy_bundle), store.active(pub.data_bundle))
-        if not all(state) or (state == keyed and time.time() - keyed_at < 300):
+        if not all(state):
             return                                  # before the import: no keys to write yet
-        with db.tx() as c:
-            records = dbm.resources(c)
-
-        def wrote(name: str, diff: dict) -> None:   # each map as it is written (key ids only)
-            with db.tx() as c:
-                dbm.audit(c, "publisher", "keys", name, None, diff)
-        keysmod.reconcile(signer.vault, keys_mount, keysmod.wanted(renderer.lines(records, state[0], "--keys")),
-                          wrote=wrote)
+        if state == keyed and time.time() - keyed_at < 300 and not keys_due(db):
+            return
+        write_keys(db, signer.vault, keys_mount, lambda records: keysmod.wanted(
+            renderer.lines(records, state[0], "--keys")))
         keyed, keyed_at = state, time.time()
 
     def chart() -> None:

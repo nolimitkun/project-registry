@@ -2,6 +2,7 @@
 appends to audit_log, which is never updated or deleted from."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 from contextlib import contextmanager
 
@@ -55,6 +56,13 @@ create sequence if not exists bundle_seq;
 -- how each publisher output is doing (health.py), for /metrics
 create table if not exists publisher_health (
   output text primary key, last_success timestamptz, last_failure timestamptz, last_error text);
+-- each gateway key id's key (keys.py): when it was issued (or, for a key from before
+-- this table, first seen), a rotation asked for and not done yet, and how long its
+-- previous key still works after one (previous_until; null: there is none)
+create table if not exists gateway_key (
+  key_id text primary key, issued_at timestamptz not null default now(),
+  rotate_requested_at timestamptz, rotate_requested_by text, grace_seconds integer,
+  previous_until timestamptz);
 -- the record kinds: a project's records, the catalog's (models, Google APIs, MCP
 -- tools, and its settings), and the policy's settings (data classes, autonomy,
 -- approvals), as a named constraint so a new kind is one migration
@@ -119,3 +127,33 @@ def apply_change(c, change: dict) -> None:
 
 def dumps(value) -> str:
     return json.dumps(value, default=str, sort_keys=True)
+
+
+def now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def keys_issued(c, key_ids, rows: dict) -> None:
+    """Keys the gateway's map has just got fresh: a new key id's, or a rotated one's (rows:
+    gateway_key as the publisher read it, so a rotation asked for meanwhile stays asked)."""
+    for k in key_ids:
+        r = rows.get(k) or {}
+        grace = (r.get("grace_seconds") or 0) if r.get("rotate_requested_at") else 0
+        c.execute("""insert into gateway_key (key_id, previous_until) values (%(k)s,
+                       case when %(g)s > 0 then now() + make_interval(secs => %(g)s) end)
+                     on conflict (key_id) do update set issued_at = now(),
+                       previous_until = excluded.previous_until,
+                       rotate_requested_at = case when gateway_key.rotate_requested_at = %(asked)s
+                                             then null else gateway_key.rotate_requested_at end,
+                       rotate_requested_by = case when gateway_key.rotate_requested_at = %(asked)s
+                                             then null else gateway_key.rotate_requested_by end""",
+                  {"k": k, "g": grace, "asked": r.get("rotate_requested_at")})
+
+
+def keys_reconciled(c, want, cut: dt.datetime) -> None:
+    """After the maps are written: a key id from before this table is counted from now, a
+    gone one's row goes, and a grace period over by `cut` (when the publisher read the
+    table, so its previous key was left out of the maps) is no more."""
+    c.execute("insert into gateway_key (key_id) select unnest(%s::text[]) on conflict do nothing", (sorted(want),))
+    c.execute("delete from gateway_key where not (key_id = any(%s))", (sorted(want),))
+    c.execute("update gateway_key set previous_until = null where previous_until <= %s", (cut,))
