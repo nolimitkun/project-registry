@@ -29,6 +29,7 @@ from . import activation, approvals, health, usage, wakeup
 from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
 from . import bundles, insight
+from . import keys as keysmod
 from .bundles import Store
 from .policy import same_data
 from .render import Renderer, RenderError, kagent_wiring_from_env, renderer_from_env
@@ -53,6 +54,14 @@ class PreviewIn(ChangeIn):
     collection: str                      # projects, agents, settings, ...
     object_id: str
     op: str = "update"                   # create, update, delete
+
+
+class RotateIn(BaseModel):
+    grace_hours: float = 24              # how long the previous key still works; 0: revoked at once
+    comment: str | None = None
+
+
+MAX_GRACE_HOURS = 7 * 24
 
 
 class ExplainIn(BaseModel):
@@ -545,6 +554,8 @@ def create_app(reg: Registry) -> FastAPI:
             rows = c.execute("select id, spec from resource where kind = 'project' order by id").fetchall()
             models = c.execute("select id, spec from resource where kind = 'model' order by id").fetchall()
             outputs = health.metrics(c)
+            records = dbm.resources(c)
+            issued = c.execute("select key_id, issued_at from gateway_key order by key_id").fetchall()
         lines = ["# HELP project_budget_usd A project's spend cap in USD per 30-day window.",
                  "# TYPE project_budget_usd gauge"]
         for r in rows:
@@ -569,6 +580,14 @@ def create_app(reg: Registry) -> FastAPI:
                 lines += ["# HELP key_spend_30d_usd What a key with its own budget spent in the last 30 days (usage ledger).",
                           "# TYPE key_spend_30d_usd gauge"]
                 lines += [f'key_spend_30d_usd{{project="{owner[k]}",key_id="{k}"}} {v}' for k, v in sorted(spent.items())]
+        # When each key's current key was issued (or first seen, for one from before the
+        # registry kept this), for the alert on keys not rotated for a long time: one
+        # series per key id, as many as the gateway's key map has.
+        key_owner = keysmod.owners(records)
+        lines += ["# HELP gateway_key_issued_timestamp_seconds When a gateway key id's current key was issued.",
+                  "# TYPE gateway_key_issued_timestamp_seconds gauge"]
+        lines += [f'gateway_key_issued_timestamp_seconds{{project="{key_owner[r["key_id"]]["project"]}",'
+                  f'key_id="{r["key_id"]}"}} {r["issued_at"].timestamp()}' for r in issued if r["key_id"] in key_owner]
         # Labelled like the gateway's token and cost metrics: the model name the provider
         # got (a KServe model's servedModel: its route replaces the catalog name), and the
         # token type.
@@ -581,6 +600,83 @@ def create_app(reg: Registry) -> FastAPI:
                     lines.append(f'model_price_usd_per_million_tokens{{model="{r["id"]}",'
                                  f'gen_ai_request_model="{label}",gen_ai_token_type="{kind}"}} {float(price[kind])}')
         return "\n".join(lines + outputs) + "\n"
+
+    # --- the gateway's keys: rotating one keeps its key id (keys.py) ---
+    def key_scope(c, user: User, oid: str, manage: bool) -> dict:
+        """The project's records, if the caller may see its keys (the platform team, security,
+        the cost owners, its owners) or, with manage, rotate them (the platform team, its
+        owners)."""
+        records = dbm.resources(c)
+        if oid not in records["project"]:
+            raise HTTPException(404, f"no project {oid}")
+        teams = {ROLE_GROUPS["platform"]} | (set() if manage else {ROLE_GROUPS["security"], ROLE_GROUPS["cost_owner"]})
+        if not user.groups & teams and reg.owner_group(c, "project", oid, None) not in user.groups:
+            raise HTTPException(403, f"not an owner of project {oid}")
+        return records
+
+    def key_rows(c, records: dict, oid: str) -> list[dict]:
+        owned = {k: o for k, o in keysmod.owners(records).items() if o["project"] == oid}
+        rows = {r["key_id"]: r for r in c.execute(
+            "select * from gateway_key where key_id = any(%s)", (sorted(owned),)).fetchall()}
+        out = []
+        for k, o in sorted(owned.items()):
+            r = rows.get(k) or {}
+            out.append({"key_id": k, "agent": o["agent"], "issued_at": r.get("issued_at"),
+                        "rotation_pending": bool(r.get("rotate_requested_at")),
+                        "rotate_requested_by": r.get("rotate_requested_by"),
+                        "grace_hours": (r["grace_seconds"] / 3600 if r.get("rotate_requested_at")
+                                        and r.get("grace_seconds") is not None else None),
+                        "previous_until": r.get("previous_until")})
+        return out
+
+    def own_key(records: dict, oid: str, key_id: str) -> None:
+        owner = keysmod.owners(records).get(key_id)
+        if not owner or owner["project"] != oid:
+            raise HTTPException(404, f"key {key_id} is not one of project {oid}'s")
+
+    @app.get("/projects/{oid}/keys")
+    def project_keys(oid: str, user: User = Depends(current_user)):
+        """The project's gateway keys (its own and its agents'): when each was issued, a
+        rotation asked for, and until when a rotated key's previous key still works."""
+        with reg.db.tx() as c:
+            return key_rows(c, key_scope(c, user, oid, manage=False), oid)
+
+    @app.post("/projects/{oid}/keys/{key_id}/rotate")
+    def rotate_key(oid: str, key_id: str, body: RotateIn, user: User = Depends(current_user)):
+        """A fresh key for this key id, from the publisher within seconds: the clients' copies
+        take it on their next refresh, and the previous key works for grace_hours more (0:
+        revoked at once, for a key that leaked). Not a change request: the key id, and so
+        everything the policy decides about it, stays."""
+        if not 0 <= body.grace_hours <= MAX_GRACE_HOURS:
+            raise HTTPException(422, f"grace_hours is between 0 and {MAX_GRACE_HOURS}")
+        with reg.db.tx() as c:
+            records = key_scope(c, user, oid, manage=True)
+            own_key(records, oid, key_id)
+            c.execute("""insert into gateway_key (key_id, rotate_requested_at, rotate_requested_by, grace_seconds)
+                         values (%s, now(), %s, %s) on conflict (key_id) do update set
+                         rotate_requested_at = excluded.rotate_requested_at,
+                         rotate_requested_by = excluded.rotate_requested_by, grace_seconds = excluded.grace_seconds""",
+                      (key_id, user.name, round(body.grace_hours * 3600)))
+            dbm.audit(c, user.name, "rotate_key", key_id, None,
+                      {"project": oid, "grace_hours": body.grace_hours, "comment": body.comment})
+            wakeup.notify(c)
+            return next(r for r in key_rows(c, records, oid) if r["key_id"] == key_id)
+
+    @app.post("/projects/{oid}/keys/{key_id}/revoke-previous")
+    def revoke_previous_key(oid: str, key_id: str, body: Decision, user: User = Depends(current_user)):
+        """Ends a rotated key's grace period now: the publisher drops its previous key."""
+        with reg.db.tx() as c:
+            records = key_scope(c, user, oid, manage=True)
+            own_key(records, oid, key_id)
+            row = c.execute("select previous_until from gateway_key where key_id = %s and previous_until > now()",
+                            (key_id,)).fetchone()
+            if not row:
+                raise HTTPException(409, f"key {key_id} has no previous key in a grace period")
+            c.execute("update gateway_key set previous_until = now() where key_id = %s", (key_id,))
+            dbm.audit(c, user.name, "revoke_previous_key", key_id, {"previous_until": row["previous_until"].isoformat()},
+                      {"project": oid, "comment": body.comment})
+            wakeup.notify(c)
+            return next(r for r in key_rows(c, records, oid) if r["key_id"] == key_id)
 
     @app.get("/projects/{oid}/effective")
     def project_effective(oid: str, user: User = Depends(current_user)):

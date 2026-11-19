@@ -236,6 +236,8 @@ project_model(project_id, model)              -- explicitly granted models
 exception(project_id, models[], why, owner, expires_at)
 agent(project_id, name, autonomy, models, mcp_tools, ...)  -- as in agents/*.yaml today
 oauth_client(project_id, client_id, created_at, rotated_at, revoked_at)
+gateway_key(key_id, issued_at, rotate_requested_at, rotate_requested_by,
+            grace_seconds, previous_until)   -- built: rotating a key in place
 change_request(id, project_id, diff jsonb, state, required_approvals jsonb,
                replay_report jsonb, bundle_revision, created_by, created_at)
 approval(change_id, approver, role, decision, comment, at)
@@ -366,6 +368,10 @@ GET    /usage                         spend and usage of a date range (default t
 GET    /usage/requests                a project's requests of one day, the dearest first
 GET    /portal/                       the portal; /portal/config.json is where the browser logs in
 GET    /projects/{id}/effective       what it can use now, asked of the gateway's OPA (data.gateway.lib)
+GET    /projects/{id}/keys            its keys and its agents': issued, a rotation asked for, previous key until
+POST   /projects/{id}/keys/{key}/rotate           a fresh key for the key id (body: {"grace_hours": 0-168,
+                                      default 24}); the platform team or its owners, no change request
+POST   /projects/{id}/keys/{key}/revoke-previous  ends a rotated key's grace period now
 GET    /status                        OPA's loaded bundles against the published ones, publisher outputs,
                                       the usage ledger, the gateway's and the registry's alerts
 POST   /explain                       would the gateway allow this call (project, key, model/tool/API), and why not
@@ -374,7 +380,7 @@ GET    /changes                       state, kind, q (object or author), limit, 
 GET    /publications                  published revisions, newest first
 GET    /export                        every record (the format of the seed and the snapshots)
 GET    /internal/bundles/{bundle}     the active bundle, for policy-replay.py (cluster-internal)
-GET    /metrics                       project_budget_usd, key_budget_usd and key_spend_30d_usd, model_price_usd_per_million_tokens and each publisher output's health, for Prometheus (cluster-internal)
+GET    /metrics                       project_budget_usd, key_budget_usd and key_spend_30d_usd, gateway_key_issued_timestamp_seconds, model_price_usd_per_million_tokens and each publisher output's health, for Prometheus (cluster-internal)
 POST   /rollback/{revision}           platform team only
 POST   /opa/status[/{partition}]      OPA's status reports (cluster-internal)
 GET    /healthz
@@ -479,6 +485,20 @@ data, no export pull requests.
   client holds it. It runs after each data bundle and every five minutes, which
   also mends a map edited by hand. Its Vault role may write those two paths and
   nothing else in the KV mount.
+- **Rotating a key keeps its key id.** The project's owners or the platform
+  team ask for it (portal, `POST /projects/{id}/keys/{key}/rotate`); it is not a
+  change request, since nothing the policy decides changes. The publisher wakes
+  and gives the key id a fresh key in both maps; the previous key stays in the
+  gateway's map only, as `<key id>.previous` with the same `{project, key_id}`
+  metadata, so OPA, the limits, usage and alerts see one key id throughout. It
+  is dropped when the grace period ends (0 to 7 days, `revoke-previous` ends it
+  early; 0 revokes it in the same write, for a key that leaked). The clients'
+  copies take the new key on their next refresh (15 s); one that reads its key
+  from an environment variable needs a restart within the grace period. The
+  `gateway_key` table holds each request, each grace period and when each key
+  was issued (a key from before the table: when the publisher first saw it),
+  served as `gateway_key_issued_timestamp_seconds{project, key_id}` for the
+  alert on keys not rotated for 90 days.
 
 ### Rotating the signing key
 
@@ -712,7 +732,6 @@ on the cluster, every publish so far changed nothing for other projects.
   with JWTs");
 - a portal page richer than the PoC's (one page: lists, a JSON merge patch
   editor, approvals; a Backstage plugin later);
-- rotating a key in place (today: a second key id, then the old one removed);
 - copies of the bundles to other sites;
 - the model choices as the intersection of the catalog and the model
   registry's `prod` versions.

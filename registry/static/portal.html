@@ -320,6 +320,7 @@ async function viewProject(id) {
       el("a", { href: `#/usage?project=${encodeURIComponent(id)}` }, "Usage")),
       el("p", { class: "muted" }, p.description || "", ` Record revision ${record.revision}.`), facts),
     effectivePanel(id),
+    keysPanel(id),
     el("section", { class: "panel" }, el("h2", {}, "Propose a change"),
       open ? el("p", { class: "error" }, "Change ", el("a", { href: `#/changes/${open.id}` }, `#${open.id}`), ` for this project is ${open.state}: a new one can be filed once it is done.`) : null,
       projectForm(id, p, classes, Object.keys(models).sort(), [...(p.keys || []), ...Object.entries(agents).filter(([, a]) => a.project === id).flatMap(([, a]) => a.keys || [])])),
@@ -724,6 +725,42 @@ const ago = (t) => {
 const toolList = (label, names, open) => names.length
   ? el("details", open ? { open: "" } : {}, el("summary", {}, `${label} (${names.length})`), el("div", {}, chips(names)))
   : el("p", { class: "muted" }, `${label}: none`);
+
+// The project's gateway keys. Rotating one keeps its key id (so its limits, usage and
+// alerts carry on): the publisher gives it a fresh key within seconds, the clients' copies
+// take it on their next refresh, and the previous key works for the grace period.
+function keysPanel(id) {
+  const body = el("div", {}, el("p", { class: "muted" }, "Loading…"));
+  const base = `/projects/${encodeURIComponent(id)}/keys`;
+  const graces = [["24", "24 hours"], ["1", "1 hour"], ["72", "3 days"], ["168", "7 days"], ["0", "none: revoke the old key now"]];
+  let polls = 0;
+  async function load(msg) {
+    try {
+      const keys = await api("GET", base);
+      body.replaceChildren(msg || "", table(["Key", "Agent", "Issued", "Previous key works until", ""], keys.map((k) => {
+        const grace = el("select", {}, graces.map(([v, label]) => el("option", { value: v }, label)));
+        const act = (path, payload) => async () => {
+          try { await api("POST", `${base}/${encodeURIComponent(k.key_id)}/${path}`, payload); polls = 0; load(); }
+          catch (err) { load(el("p", { class: "error" }, err.message)); }
+        };
+        return el("tr", {}, el("td", {}, el("strong", {}, k.key_id)), el("td", {}, k.agent || muted("—")),
+          el("td", {}, k.issued_at ? when(k.issued_at) : muted("not issued yet")),
+          el("td", {}, k.previous_until ? [when(k.previous_until), " ",
+            el("button", { class: "action danger", onclick: act("revoke-previous", {}) }, "Revoke it now")] : muted("—")),
+          el("td", {}, k.rotation_pending
+            ? el("span", { class: "state-publishing" }, `rotating (grace ${k.grace_hours} h, asked by ${k.rotate_requested_by})…`)
+            : el("div", { class: "row" }, "grace ", grace,
+                el("button", { class: "action", onclick: () => act("rotate", { grace_hours: Number(grace.value) })() }, "Rotate"))));
+      })), el("p", { class: "muted" }, "Only the platform team and the project's owners may rotate. A client reading its key from an environment variable needs a restart to use the new one."));
+      if (keys.some((k) => k.rotation_pending) && polls++ < 20) setTimeout(() => load(), 3000);
+    } catch (err) {
+      body.replaceChildren(err.status === 403 ? muted("Only the platform team, security, the cost owners and the project's owners see its keys.")
+        : el("p", { class: "error" }, err.message));
+    }
+  }
+  load();
+  return el("section", { class: "panel" }, el("h2", {}, "Keys"), body);
+}
 
 // Asked of the gateway's OPA, so it fills in after the rest of the page.
 function effectivePanel(id) {

@@ -415,6 +415,6 @@ build.** Bundle roots follow the layout: a top-level `data.json` makes the roots
   `mini-cloud-499820` in `eu`.
 - **Time to first token** needs streaming traffic before `fastest` can use it.
 - **Keys:** the project registry issues and revokes them (its publisher writes
-  Vault's key maps from the records); rotating a key in place, and OAuth clients
-  instead of keys, are not done yet
+  Vault's key maps from the records) and rotates them in place, keeping the key
+  id; OAuth clients instead of keys are not done yet
   ([design](https://github.com/nolimitkun/project-registry/blob/main/docs/design.md)).

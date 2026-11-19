@@ -876,3 +876,63 @@ def test_a_refused_google_api_gets_a_hint():
     from registry import insight
     assert "placement" in insight.hint("Google API tts is not allowed for project model-onboarding (its placement, gcp, is not one of the project's: onprem)")
     assert "catalog" in insight.hint("Google API unknown is not in the catalog")
+
+
+def test_a_key_is_rotated_in_place_with_a_grace_period(world):
+    from fastapi.testclient import TestClient
+
+    from registry import keys
+    from tests.test_keys import FakeKV
+    db, reg = world["db"], world["reg"]
+    importer.run(db, world["store"], world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    with db.tx() as c:
+        c.execute("update project_owner set owner_group = 'webui-owners' where project_id = 'open-webui'")
+    kv, wanted = FakeKV(), lambda records: {k: o["project"] for k, o in keys.owners(records).items()}
+    publisher.write_keys(db, kv, "m", wanted)                         # every key id, counted from now
+    old = kv.data[keys.CLIENTS]["open-webui"]
+    assert not publisher.keys_due(db)
+    app = api.create_app(reg)
+    client = TestClient(app)
+    owner = User("wendy", {"webui-owners"})
+    app.dependency_overrides[api.current_user] = lambda: owner
+    listed = client.get("/projects/open-webui/keys").json()
+    assert [k["key_id"] for k in listed] == ["open-webui"] and listed[0]["issued_at"] and not listed[0]["previous_until"]
+    assert client.get("/projects/admin/keys").status_code == 403                 # not its owner
+    assert client.post("/projects/open-webui/keys/admin/rotate", json={}).status_code == 404   # not its key
+    assert client.post("/projects/open-webui/keys/open-webui/rotate", json={"grace_hours": 200}).status_code == 422
+    assert client.post("/projects/open-webui/keys/open-webui/revoke-previous", json={}).status_code == 409
+    app.dependency_overrides[api.current_user] = lambda: COST
+    assert client.get("/projects/open-webui/keys").status_code == 200            # cost owners see keys
+    assert client.post("/projects/open-webui/keys/open-webui/rotate", json={}).status_code == 403   # not rotate them
+    app.dependency_overrides[api.current_user] = lambda: owner
+
+    r = client.post("/projects/open-webui/keys/open-webui/rotate", json={"grace_hours": 1}).json()
+    assert r["rotation_pending"] and r["rotate_requested_by"] == "wendy" and r["grace_hours"] == 1
+    assert publisher.keys_due(db)
+    out = publisher.write_keys(db, kv, "m", wanted)
+    assert out["issued"] == ["open-webui"] and out["added"] == ["open-webui.previous"]
+    new = kv.data[keys.CLIENTS]["open-webui"]
+    assert new != old and json.loads(kv.data[keys.GATEWAY]["open-webui.previous"]) == {
+        "key": old, "metadata": {"project": "open-webui", "key_id": "open-webui"}}
+    r = client.get("/projects/open-webui/keys").json()[0]
+    assert not r["rotation_pending"] and r["previous_until"]
+    assert publisher.write_keys(db, kv, "m", wanted) is None                    # in its grace period: kept
+    assert not publisher.keys_due(db)
+
+    # the owner ends the grace period: the publisher drops the previous key
+    assert client.post("/projects/open-webui/keys/open-webui/revoke-previous", json={}).status_code == 200
+    assert publisher.keys_due(db)
+    out = publisher.write_keys(db, kv, "m", wanted)
+    assert out["removed"] == ["open-webui.previous"] and kv.data[keys.CLIENTS]["open-webui"] == new
+    assert not publisher.keys_due(db) and client.get("/projects/open-webui/keys").json()[0]["previous_until"] is None
+
+    # no grace period: the old key is gone in the same write
+    client.post("/projects/open-webui/keys/open-webui/rotate", json={"grace_hours": 0})
+    out = publisher.write_keys(db, kv, "m", wanted)
+    assert out["issued"] == ["open-webui"] and not any(k.endswith(".previous") for k in kv.data[keys.GATEWAY])
+    with db.tx() as c:
+        assert [r["action"] for r in c.execute("select action from audit_log where object = 'open-webui' "
+                                                "and actor = 'wendy' order by seq")] == \
+            ["rotate_key", "revoke_previous_key", "rotate_key"]
+    m = TestClient(api.create_app(reg)).get("/metrics").text
+    assert 'gateway_key_issued_timestamp_seconds{project="open-webui",key_id="open-webui"}' in m
