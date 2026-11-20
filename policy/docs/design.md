@@ -176,6 +176,11 @@ callout costs about a millisecond.
 | `semantic` | the task class's list in the catalog, then cheapest |
 | `fixed:<model>` | that model, then cheapest |
 
+A catalog model with `auto: false` is left out of the cheapest and fastest
+orders, so only a caller that names it, or `fixed:<model>`, gets it, and no task
+list may name it. It is for a model the catalog lists but `auto` shouldn't pick
+on price alone, such as a small one scaled to zero.
+
 **Prices** come from agentgateway v1.7.0's built-in price table, the same
 rates behind its cost metrics. Each one was checked against
 `agentgateway_gen_ai_client_cost_usd_total`. For example, Gemini 4 Argon: 136
