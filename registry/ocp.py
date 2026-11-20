@@ -11,8 +11,9 @@ has approved:
   (`facts`): the gateway's key ids, the catalog models' deployments, the serving
   namespaces.
 
-The publisher calls `pin` when the active policy commit or data bundle changes, and every
-five minutes, which also mends an OCP that lost its state. The bundles, their labels,
+The publisher calls `pin` when the active policy commit or data bundle changes, every five
+minutes, and as soon as `pinned` finds a source reset (OCP reloads its config on a
+restart, which has the fleet sources only as placeholders). The bundles, their labels,
 stacks and destinations are OCP's own config (the deployment repo); the sources named
 here are only ever written by the registry.
 """
@@ -53,6 +54,19 @@ class OCP:
         path = f"{self.subdir}/{directory}" if self.subdir else directory
         return {"git": {"repo": self.repo, "reference": f"refs/heads/{self.ref}", "commit": commit, "path": path,
                         "excluded_files": ["*_test.rego"]}}
+
+    def pinned(self, commit: str) -> bool:
+        """Whether every fleet source is still at `commit`. OCP's config has each one
+        only as a placeholder (a bundle can't require a source its config lacks), and
+        reloading it on a restart resets them: until the registry pins them again, a
+        fleet's bundle has the facts but no policy."""
+        for name, directory in SOURCES.items():
+            r = self.http.get(f"{self.url}/v1/sources/{name}", timeout=10)
+            if r.status_code >= 300:
+                raise RuntimeError(f"OCP GET /v1/sources/{name}: {r.status_code} {r.text[:200]}")
+            if (r.json().get("result") or {}).get("git") != self.source(directory, commit)["git"]:
+                return False
+        return True
 
     def pin(self, commit: str, data: dict) -> None:
         """Every fleet source at `commit`, and the facts; OCP rebuilds the bundles that

@@ -5,6 +5,7 @@ The policy of [Mini Platform](https://github.com/nolimitkun/mini-platform-deploy
 | Path | What |
 |---|---|
 | `policies/gateway/` | the Rego: the decision (`authz.rego`), the model behind `auto` (`select.rego`, `rankings.rego`), what the decision log keeps (`log_mask.rego`), who proposes and who approves a project registry change (`portal.rego`), and their tests. This directory is the `gateway-policy` bundle; the data classes, autonomy and approvals are the registry's setting records |
+| `policies/admission/`, `policies/platform/` | the Kubernetes admission fleet's Rego (warnings, or denials for the rules in `config.rego`) and the library every OPA fleet built by OPA Control Plane shares (a stack mounts it); OCP builds them at the active policy commit, with the active records' facts as `data.registry` (the registry's `registry/ocp.py`). Not part of the gateway's bundles |
 | `projects/schema.json`, `agents/schema.json`, `settings/schema.json` | the format of the project registry's project, agent and setting records |
 | `scripts/gen-projects.py` | validates records against the schemas and the rules across them, and renders the `gateway-projects` bundle |
 | `scripts/gen-settings.py` | validates the setting records (the parameters reviewers decide: data classes, autonomy, who approves what) and renders `data.registry.settings` in the `gateway-projects` bundle |
@@ -29,7 +30,7 @@ their format and the renderers.
 
 ## How a change goes live
 
-1. A pull request to this repository, with CI: `policy/scripts/validate.sh` (the test records render, the chart renders with them, the Rego passes `opa check`, `opa fmt` and `opa test`, and both bundles build and load together), and the registry's tests with the policy of the same commit. A change to the registry and to the policy (a new record kind, say) is one pull request.
+1. A pull request to this repository, with CI: `policy/scripts/validate.sh` (the test records render, the chart renders with them, the Rego passes `opa check`, `opa fmt` and `opa test`, and both bundles build and load together; the admission fleet's Rego passes the same checks and has no `.manifest`), and the registry's tests with the policy of the same commit. A change to the registry and to the policy (a new record kind, say) is one pull request.
 2. Merged to `main`, nothing changes yet. Within a minute the project registry files the commit as a **policy change request**:
    - it tests the commit with its live records rendered at it;
    - it builds and signs the bundle;

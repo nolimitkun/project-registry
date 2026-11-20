@@ -31,8 +31,9 @@ step, for 1,000 projects or more on several sites, edited through a portal.
 - **One path for every change.** The registry's publisher builds and signs
   both bundles: the policy from Git once its policy change is approved, the
   project data once a project change is. A merge to `main` alone doesn't change
-  what OPA loads. OPA Control Plane is retired (see
-  [Why OCP goes](#why-ocp-goes)).
+  what OPA loads. OPA Control Plane has no place in the gateway's chain, and
+  builds only for the platform's other OPA fleets, from what the registry pins
+  (see [Where OCP is](#where-ocp-is)).
 
 **Out of scope:** the Rego policy, the record schemas and the gateway-models
 chart stay in Git (this repository's [`policy/`](../policy/README.md)),
@@ -547,9 +548,37 @@ from the old pod. That run also found and fixed a flaw in activation: a
 change published right after an OPA rollout stayed `publishing`, because the
 replaced pod's last report still counted.
 
-## Why OCP goes
+## Where OCP is
 
-Before phase 2, OCP built both bundles from Git and uploaded them to MinIO. In phase 2:
+Before phase 2, OCP built both of the gateway's bundles from Git and uploaded them to
+MinIO. Phase 2 took it out of the gateway's chain (below), and it is back for the
+platform's other OPA fleets, the first one being Kubernetes admission:
+
+- **Not in the gateway's chain.** OCP 0.11 still can't sign a bundle, has no check
+  before publishing, and builds bundles itself, so it can't pass on the registry's
+  signed ones: OPA would have to stop verifying. The gateway's OPA scales on its own:
+  its replicas each pull the signed bundles from MinIO.
+- **The registry pins what OCP builds** (`registry/ocp.py`, the publisher's `ocp`
+  output). OCP's git sources, one per fleet directory of `policy/` (`policies/admission`,
+  and `policies/platform`, which a stack mounts into every bundle labelled `fleet:
+  admission`), are set to the active policy commit, so a change to a fleet's policy is
+  a policy change, approved like the gateway's; OCP never follows a branch. The facts
+  the fleets check against (`data.registry`: the gateway's key ids, the catalog
+  models' deployments, the serving namespaces) are pushed from the active records.
+  The publisher pins after each change of either, every five minutes, and within
+  30 s of finding a source reset: OCP's config has the fleet sources only as
+  placeholders (a bundle can't require a source its config lacks), and reloads them
+  on a restart, so until the registry pins again a fleet's bundle has the facts but
+  no policy (the admission webhook ignores a failure, so this fails open).
+- **What OCP adds:** composing a shared library with each fleet's policy (stacks, by
+  label), rebuilding within about 30 s of a pin, more destinations (S3, GCS, Azure)
+  and a bundle per fleet, with its build status in its API.
+- **Unsigned:** a fleet's OPA trusts its bucket's write rights (only OCP's MinIO
+  account may write it), not a signature.
+
+### Why OCP left the gateway's chain
+
+In phase 2:
 
 | OCP did | Phase 2 | Why not OCP |
 |----------------|---------|-------------|

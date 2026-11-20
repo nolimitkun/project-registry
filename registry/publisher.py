@@ -374,7 +374,7 @@ def main() -> None:
     keys_mount, keyed, keyed_at = env.get("GATEWAY_KEYS_MOUNT"), None, 0.0
     ocp = ocpmod.OCP(env["OCP_URL"], env["OCP_TOKEN"], env["POLICY_REPO"], env.get("POLICY_SUBDIR") or None,
                      env.get("POLICY_REF", "main")) if env.get("OCP_URL") else None
-    pinned, pinned_at = None, 0.0
+    pinned, pinned_at, checked_at = None, 0.0, 0.0
     health = Health(db)
     wake = Wakeup(env["DATABASE_URL"])
     argo_app = env.get("GATEWAY_MODELS_ARGO_APP")       # "<namespace>/<name>": refresh it after a chart
@@ -397,15 +397,23 @@ def main() -> None:
 
     def ocp_pin() -> None:
         """OPA Control Plane's sources at the active policy commit, and the active records'
-        facts (ocp.py): after each change of either, and every five minutes."""
-        nonlocal pinned, pinned_at
+        facts (ocp.py): after each change of either, every five minutes, and within 30 s of
+        OCP losing the pins (a restart)."""
+        nonlocal pinned, pinned_at, checked_at
         state = (store.active(pub.policy_bundle), store.active(pub.data_bundle))
-        if not all(state) or (state == pinned and time.time() - pinned_at < 300):
+        now = time.time()
+        if not all(state):
             return
+        if state == pinned and now - pinned_at < 300:
+            if now - checked_at < 30:
+                return
+            checked_at = now                        # every 30 s: an OCP restart resets the sources
+            if ocp.pinned(state[0]):
+                return
         with db.tx() as c:
             records = dbm.resources(c)
         ocp.pin(state[0], ocpmod.facts(records))
-        pinned, pinned_at = state, time.time()
+        pinned, pinned_at, checked_at = state, now, now
 
     def chart() -> None:
         """The gateway-models chart of the active policy commit (gatewaychart.py)."""

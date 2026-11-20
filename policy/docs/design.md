@@ -11,7 +11,8 @@ rotating a key, changing a limit), use [agentgateway.md](https://github.com/noli
 
 > **Since the phase 2 proof of concept** ([project-registry.md](https://github.com/nolimitkun/project-registry/blob/main/docs/design.md)),
 > several things below describe how it was, not how it is: OPA Control Plane no
-> longer builds the bundles (the project registry's publisher builds and signs
+> longer builds the gateway's bundles (it builds the admission fleet's, pinned by
+> the registry) (the project registry's publisher builds and signs
 > both, each change after an approval); project data lives only in the
 > registry, and `projects/*.yaml` are gone from Git (their schema and
 > `gen-projects.py` remain); so does the catalog (`catalog/*.yaml` are gone:

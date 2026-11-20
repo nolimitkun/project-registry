@@ -4,8 +4,10 @@
 # data.registry after each data bundle it activates (registry/ocp.py). The
 # gateway's own OPA doesn't use it: its bundles are the registry's, signed.
 #
-# No .manifest here or in a fleet's directory: OCP takes a source's .manifest
-# roots over the ones it computes, which would leave the pushed data out.
+# The stack mounts it with automount: false, so it stays package platform (OCP
+# otherwise renames a stack's packages under stacks.<stack>). No .manifest here
+# or in a fleet's directory: OCP takes a source's .manifest roots over the ones
+# it computes, which would leave the pushed data out.
 package platform
 
 import rego.v1
