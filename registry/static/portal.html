@@ -820,7 +820,7 @@ async function viewCatalog() {
   const modelRows = Object.entries(models).map(([id, m]) => el("tr", {},
     el("td", {}, el("strong", {}, id)), el("td", {}, el("span", { class: "chip" }, m.placement || "")), el("td", {}, m.provider || ""),
     numTd(price(m.price, "input")), numTd(price(m.price, "output")), el("td", {}, m.servedModel ? el("code", {}, m.servedModel) : ""),
-    el("td", {}, chips(Object.entries(tasks).filter(([, ms]) => ms.includes(id)).map(([t]) => t)))));
+    el("td", {}, m.auto === false ? el("span", { class: "chip" }, "not in auto") : chips(Object.entries(tasks).filter(([, ms]) => ms.includes(id)).map(([t]) => t)))));
   const byRisk = {};
   for (const [t, x] of Object.entries(tools)) (byRisk[x.risk] = byRisk[x.risk] || []).push(t);
   show(

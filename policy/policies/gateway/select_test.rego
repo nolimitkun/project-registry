@@ -57,6 +57,18 @@ test_cheapest if {
 	pick_no_task(proj({"placement": ["gcp"]})) == "gemini-3.5-flash-lite"
 }
 
+test_auto_false_models_are_never_picked_by_price_or_speed if {
+	small := {"placement": "onprem", "provider": "KServe", "price": {"input": 0, "output": 0}, "served_model": "s", "auto": false}
+	pick_no_task(proj({})) == "qwen3.6-27b" with data.registry.catalog.models["qwen2.5-1.5b"] as small
+	select.result.model == "qwen3.6-27b" with input as {"project": "t"}
+		with data.projects.t as proj({"routing": "fastest"})
+		with http.send as prom_down
+		with data.registry.catalog.models["qwen2.5-1.5b"] as small
+
+	# named, it is still the project's to use
+	pick_no_task(proj({"routing": "fixed:qwen2.5-1.5b"})) == "qwen2.5-1.5b" with data.registry.catalog.models["qwen2.5-1.5b"] as small
+}
+
 test_cheapest_respects_models_allow if {
 	pick_no_task(proj({"models_allow": ["gemini-4-*", "gemini-3.8-*"]})) == "gemini-3.8-flash"
 }

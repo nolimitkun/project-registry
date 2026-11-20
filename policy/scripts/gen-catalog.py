@@ -99,8 +99,12 @@ def validate(catalog):
             and all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in price.values())
         ):
             errors.append(f"{where}.price: needs input and output, USD per million tokens, each >= 0")
+        # auto: false keeps a model out of model "auto"'s cheapest and fastest orders
+        # (select.rego); it is still callable by name, and by fixed:<model>.
+        if "auto" in m and not isinstance(m["auto"], bool):
+            errors.append(f"{where}.auto: must be true or false")
         spec = PROVIDERS[provider]
-        fields = set(m) - {"placement", "provider", "price"}
+        fields = set(m) - {"placement", "provider", "price", "auto"}
         for f in sorted(spec["required"] - fields):
             errors.append(f"{where}: {provider} needs {f}")
         for f in sorted(fields - spec["required"] - spec["optional"]):
@@ -126,6 +130,8 @@ def validate(catalog):
         for m in prefs:
             if m not in models:
                 errors.append(f"{where}: {m!r} is not a catalog model")
+            elif (models[m] or {}).get("auto") is False:
+                errors.append(f"{where}: {m!r} has auto: false, so auto-{task} may not pick it")
         if f"auto-{task}" in models:
             errors.append(f"{where}: its virtual model auto-{task} clashes with a catalog model")
 
@@ -179,7 +185,7 @@ def render(catalog, tool_risks):
     apis = catalog.get("googleApis") or {}
     gateway = {
         "models": [
-            {"name": name, **{k: v for k, v in m.items() if k not in ("placement", "price")}}
+            {"name": name, **{k: v for k, v in m.items() if k not in ("placement", "price", "auto")}}
             for name, m in models.items()
         ],
         "googleApis": {
@@ -194,7 +200,8 @@ def render(catalog, tool_risks):
             # served_model: the name the gateway's metrics carry for a KServe model (its
             # route replaces the catalog name), which rankings.rego maps back
             name: {"placement": m["placement"], "provider": m["provider"], "price": m["price"],
-                   **({"served_model": m["servedModel"]} if "servedModel" in m else {})}
+                   **({"served_model": m["servedModel"]} if "servedModel" in m else {}),
+                   **({"auto": False} if m.get("auto") is False else {})}
             for name, m in models.items()
         },
         "google_apis": {name: {"placement": a["placement"]} for name, a in apis.items()},

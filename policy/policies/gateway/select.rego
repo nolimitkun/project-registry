@@ -35,12 +35,16 @@ latency_ms(m) := t if {
 	t := rankings.latency_ms[m]
 } else := unranked_ms
 
-# Allowed models from cheapest to dearest; the name breaks ties, so the order
-# is stable.
-by_price := [m | some pair in sort([[blended_price(m), m] | some m in allowed]); m := pair[1]]
+# The allowed models auto may pick by price or speed: not those the catalog marks
+# auto: false (a model kept for callers that name it, such as one scaled to zero).
+auto_candidates := {m | some m in allowed; object.get(lib.catalog.models[m], "auto", true) != false}
 
-# Allowed models from fastest to slowest, then by price.
-by_speed := [m | some t in sort([[latency_ms(m), blended_price(m), m] | some m in allowed]); m := t[2]]
+# Candidates from cheapest to dearest; the name breaks ties, so the order is
+# stable.
+by_price := [m | some pair in sort([[blended_price(m), m] | some m in auto_candidates]); m := pair[1]]
+
+# Candidates from fastest to slowest, then by price.
+by_speed := [m | some t in sort([[latency_ms(m), blended_price(m), m] | some m in auto_candidates]); m := t[2]]
 
 # The task class's preferred models that the project may use, in the catalog's
 # order. Empty without a task (the router was skipped or is down).
