@@ -30,6 +30,7 @@ from psycopg.types.json import Jsonb
 
 from . import activation, gatewaychart
 from . import keys as keysmod
+from . import ocp as ocpmod
 from .health import Health
 from .wakeup import Wakeup
 from . import argo
@@ -371,6 +372,9 @@ def main() -> None:
     charts = gatewaychart.HelmRepo(s3, env["GATEWAY_MODELS_BUCKET"]) if env.get("GATEWAY_MODELS_BUCKET") else None
     charted = None
     keys_mount, keyed, keyed_at = env.get("GATEWAY_KEYS_MOUNT"), None, 0.0
+    ocp = ocpmod.OCP(env["OCP_URL"], env["OCP_TOKEN"], env["POLICY_REPO"], env.get("POLICY_SUBDIR") or None,
+                     env.get("POLICY_REF", "main")) if env.get("OCP_URL") else None
+    pinned, pinned_at = None, 0.0
     health = Health(db)
     wake = Wakeup(env["DATABASE_URL"])
     argo_app = env.get("GATEWAY_MODELS_ARGO_APP")       # "<namespace>/<name>": refresh it after a chart
@@ -390,6 +394,18 @@ def main() -> None:
         write_keys(db, signer.vault, keys_mount, lambda records: keysmod.wanted(
             renderer.lines(records, state[0], "--keys")))
         keyed, keyed_at = state, time.time()
+
+    def ocp_pin() -> None:
+        """OPA Control Plane's sources at the active policy commit, and the active records'
+        facts (ocp.py): after each change of either, and every five minutes."""
+        nonlocal pinned, pinned_at
+        state = (store.active(pub.policy_bundle), store.active(pub.data_bundle))
+        if not all(state) or (state == pinned and time.time() - pinned_at < 300):
+            return
+        with db.tx() as c:
+            records = dbm.resources(c)
+        ocp.pin(state[0], ocpmod.facts(records))
+        pinned, pinned_at = state, time.time()
 
     def chart() -> None:
         """The gateway-models chart of the active policy commit (gatewaychart.py)."""
@@ -438,6 +454,8 @@ def main() -> None:
             health.run("chart", chart)
         if keys_mount:
             health.run("keys", gateway_keys, retry_after=60)    # Vault down or no permission: once a minute
+        if ocp:
+            health.run("ocp", ocp_pin, retry_after=60)
         health.run("activation", activate)
         if health.run("data", pub.publish_once):
             # what follows from the new bundle goes out now, not after the batch interval
@@ -445,6 +463,8 @@ def main() -> None:
                 health.run("chart", chart)
             if keys_mount:
                 health.run("keys", gateway_keys, retry_after=60)
+            if ocp:
+                health.run("ocp", ocp_pin, retry_after=60)
             sync()                                  # the agents may have changed
             time.sleep(interval)                    # batches: OPA reloads at most this often
             continue

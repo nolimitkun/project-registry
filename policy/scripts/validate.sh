@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI for the gateway policy: the test records (projects and the catalog) render (schemas, cross-file rules), the Rego passes opa check, fmt and
+# CI for the gateway policy and the admission fleet's: the test records (projects and the catalog) render (schemas, cross-file rules), the Rego passes opa check, fmt and
 # test with them, and both bundles build and load together.
 #   needs: python3 with jsonschema and pyyaml, opa, helm
 set -euo pipefail
@@ -48,5 +48,14 @@ if opa build -b policies/gateway --ignore '*_test.rego' -o "$tmp/policy.tar.gz" 
 else
   bad "bundles build and load together"
 fi
+
+echo "==> admission (OPA Control Plane builds it: policies/admission and the stack's policies/platform)"
+fleet="policies/admission policies/platform"
+if opa check --strict $fleet >/dev/null; then ok "opa check"; else bad "opa check $fleet"; fi
+if [[ -z "$(opa fmt --list $fleet)" ]]; then ok "opa fmt"; else bad "opa fmt (run: opa fmt -w $fleet)"; fi
+if opa test $fleet >/dev/null; then ok "opa test"; else bad "opa test"; opa test $fleet || true; fi
+# OCP takes a source's .manifest roots over the ones it computes, which would leave
+# the registry's pushed data (data.registry) outside the bundle's roots.
+if [[ -z "$(find $fleet -name .manifest)" ]]; then ok "no .manifest"; else bad "a .manifest in $fleet"; fi
 
 [[ $fail == 0 ]] && echo "All checks passed." || { echo "Some checks FAILED."; exit 1; }
