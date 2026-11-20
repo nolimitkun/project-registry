@@ -55,13 +55,23 @@ test_a_deployment_must_be_a_catalog_models if {
 
 test_only_the_gateway_namespace_reads_the_key_map if {
 	pod := {"metadata": {"name": "p"}, "spec": {"containers": [{"name": "c", "envFrom": [{"secretRef": {"name": "agentgateway-api-keys"}}]}]}}
-	out := admission.response with input as review("Pod", "model-prod", pod) with data.registry as registry
+	out := admission.response with input as review("Pod", "model-prod", pod) with data.registry as registry with data.admission.config.enforce as set()
 	count(out.warnings) == 1
 	home := admission.response with input as review("Pod", "mini-platform", pod) with data.registry as registry
 	home.warnings == []
 	mounted := {"metadata": {"name": "p"}, "spec": {"volumes": [{"name": "k", "secret": {"secretName": "agentgateway-api-keys"}}]}}
-	vol := admission.response with input as review("Pod", "model-hprd", mounted) with data.registry as registry
+	vol := admission.response with input as review("Pod", "model-hprd", mounted) with data.registry as registry with data.admission.config.enforce as set()
 	count(vol.warnings) == 1
+}
+
+test_reading_the_key_map_elsewhere_is_denied if {
+	pod := {"metadata": {"name": "p"}, "spec": {"containers": [{"name": "c", "env": [{"name": "K", "valueFrom": {"secretKeyRef": {"name": "agentgateway-api-keys", "key": "k"}}}]}]}}
+	r := admission.response with input as review("Pod", "model-prod", pod) with data.registry as registry
+	not r.allowed
+	r.status == {"code": 403, "message": "Pod p in model-prod reads the gateway's key map (agentgateway-api-keys); only mini-platform may"}
+	r.warnings == []
+	home := admission.response with input as review("Pod", "mini-platform", pod) with data.registry as registry
+	home.allowed
 }
 
 test_without_registry_data_every_key_copy_warns if {
