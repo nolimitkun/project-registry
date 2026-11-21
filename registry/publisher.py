@@ -296,6 +296,7 @@ class Publisher:
         policy_rev = self.store.active(self.policy_bundle)
         if not policy_rev:
             raise RuntimeError(f"no active {self.policy_bundle} bundle to publish against")
+        models_before = dbm.resources(c).get("model") or {}
         for ch in changes:
             dbm.apply_change(c, ch)
         records = dbm.resources(c)
@@ -318,7 +319,7 @@ class Publisher:
             # published since the submit)
             try:
                 report["auto"] = picks.impact([policy, active], [policy, data_dir], records.get("model") or {},
-                                              self.opa, self.serving)
+                                              self.opa, self.serving, models_before)
             except RuntimeError as e:
                 report["auto"] = {"error": str(e)[-500:]}
             why = picks.refusal(report["auto"]) if "moves" in report["auto"] else None

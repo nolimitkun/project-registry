@@ -73,12 +73,21 @@ def serving(deployment: str) -> str | None:
     return "no replicas" if replicas == 0 else None
 
 
-def impact(before: list[Path], after: list[Path], models: dict, opa: str = "opa", serving=serving) -> dict:
-    """The evidence: the moves, and the models they move onto that nobody serves (`unserved`:
-    model -> why). `unknown` names the ones the cluster couldn't be asked about."""
-    moved = moves(picks(before, opa), picks(after, opa))
+def impact(before: list[Path], after: list[Path], models: dict, opa: str = "opa", serving=serving,
+           models_before: dict | None = None) -> dict:
+    """The evidence: the moves, and the models auto picks after the change that nobody serves
+    (`unserved`: model -> why). Checked: every model a pick moves onto, and every model
+    picked whose deployment the change repoints (models_before: the model records before;
+    a release promoted onto the same name moves no pick, but its calls go to the new
+    deployment). `stranded`: the picks on an unserved model. `unknown` names the models the
+    cluster couldn't be asked about."""
+    now = picks(after, opa)
+    moved = moves(picks(before, opa), now)
+    picked = {m for tasks in now.values() for m in tasks.values() if m}
+    repointed = {m for m in picked if models_before is not None
+                 and (models_before.get(m) or {}).get("deployment") != (models.get(m) or {}).get("deployment")}
     unserved, unknown = {}, []
-    for m in sorted({x["after"] for x in moved if x["after"]}):
+    for m in sorted({x["after"] for x in moved if x["after"]} | repointed):
         deployment = (models.get(m) or {}).get("deployment")
         if not deployment:
             continue                    # a provider's model: served as long as the provider is
@@ -90,15 +99,24 @@ def impact(before: list[Path], after: list[Path], models: dict, opa: str = "opa"
             continue
         if why:
             unserved[m] = f"{deployment}: {why}"
-    return {"moves": moved, "unserved": unserved, "unknown": unknown}
+    # a task's pick that is the project's own pick without a task is said by that row
+    stranded = [{"project": p, "task": t or None, "model": m}
+                for p, tasks in sorted(now.items()) for t, m in sorted(tasks.items())
+                if m in unserved and (t == "" or m != tasks.get(""))]
+    return {"moves": moved, "unserved": unserved, "stranded": stranded, "unknown": unknown}
 
 
 def refusal(report: dict) -> str | None:
-    """Why the change may not go ahead, or None: a pick moved onto an unserved model."""
-    bad = [x for x in report["moves"] if x["after"] in report["unserved"]]
+    """Why the change may not go ahead, or None: after it, auto would pick a model nobody
+    serves (moved onto it, or a model picked already whose deployment it repoints)."""
+    bad = report.get("stranded")
+    if bad is None:                     # a report from before stranded: the moves alone
+        bad = [{"project": x["project"], "task": x["task"], "model": x["after"]}
+               for x in report["moves"] if x["after"] in report["unserved"]]
     if not bad:
         return None
-    m = bad[0]["after"]
+    m = bad[0]["model"]
+    bad = [x for x in bad if x["model"] == m]
     who = ", ".join(sorted({x["project"] + (f" ({x['task']})" if x["task"] else "") for x in bad}))
     return (f"auto would pick {m} for {who}, but {report['unserved'][m]}: give it replicas, or set "
             f"auto: false in its record")

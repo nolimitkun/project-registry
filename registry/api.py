@@ -193,6 +193,7 @@ class Registry:
         if not self.may_submit(change, user, owner):
             raise HTTPException(403, f"you may not propose changes to {kind} {oid}")
         records = dbm.resources(c)
+        models_before = dict(records.get("model") or {})
         if after is None:
             records[kind].pop(oid, None)
         else:
@@ -213,12 +214,13 @@ class Registry:
                 rendered = self.renderer.render(records, policy_rev, Path(tmp) / "out", env=wiring)
             except RenderError as e:
                 raise HTTPException(422, {"errors": e.errors}) from e
-            auto = self.auto_impact(policy_rev, rendered, records.get("model") or {}, Path(tmp))
+            auto = self.auto_impact(policy_rev, rendered, records.get("model") or {}, Path(tmp), models_before)
         if auto.get("refusal"):
             raise HTTPException(422, auto["refusal"])
         return change, owner, self.required_approvals(change, user.name), auto
 
-    def auto_impact(self, policy_rev: str, rendered: Path, models: dict, tmp: Path) -> dict:
+    def auto_impact(self, policy_rev: str, rendered: Path, models: dict, tmp: Path,
+                    models_before: dict | None = None) -> dict:
         """picks.impact of the candidate records against the active bundles. Evidence, so an
         evaluation that fails is reported, not raised; a move onto an unserved model is
         the change's refusal."""
@@ -228,7 +230,8 @@ class Registry:
         try:
             policy = self.store.fetch(self.policy_bundle, policy_rev, tmp / "policy.tar.gz")
             data = self.store.fetch(self.data_bundle, data_rev, tmp / "data.tar.gz")
-            report = picks.impact([policy, data], [policy, rendered], models, self.opa, self.serving)
+            report = picks.impact([policy, data], [policy, rendered], models, self.opa, self.serving,
+                                  models_before)
         except (RuntimeError, OSError) as e:
             log.warning("auto picks: %s", e)
             return {"error": str(e)[-500:]}
