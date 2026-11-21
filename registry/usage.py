@@ -476,7 +476,7 @@ def report(reader: Reader, visible: set[str] | None, start: dt.date, end: dt.dat
     for r in by_agent:
         b = (key_budgets or {}).get(r["key_id"])
         r["budget_usd_30d"] = b
-        r["cost_30d"] = key_burn.get(r["key_id"]) or 0 if b else None
+        r["cost_30d"] = (key_burn.get(r["key_id"]) or 0) if b else None
         r["budget_used"] = r["cost_30d"] / b if b else None
     onprem = q(f"""SELECT coalesce(sum(input_tokens), 0) AS input_tokens, coalesce(sum(output_tokens), 0) AS output_tokens
                    FROM t WHERE {{where}} AND {model} AND placement = 'onprem'""")[0] if by_day else {"input_tokens": 0, "output_tokens": 0}

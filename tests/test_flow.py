@@ -958,6 +958,11 @@ def test_a_change_shows_and_guards_what_auto_picks(world):
         return "no replicas"
 
     reg.serving = pub.serving = scaled_to_zero
+    roles["may_submit"] = False                      # someone who may not propose it: 403, nothing worked out
+    with pytest.raises(HTTPException) as e:
+        reg.submit(ALICE, "model", "a-small", "create", api.ChangeIn(spec=small))
+    assert e.value.status_code == 403 and asked == []
+    roles["may_submit"] = True
     with pytest.raises(HTTPException) as e:          # free, so it wins cheapest for every project
         reg.submit(ALICE, "model", "a-small", "create", api.ChangeIn(spec=small))
     assert e.value.status_code == 422 and "auto would pick a-small for " in e.value.detail
@@ -1005,3 +1010,25 @@ def test_a_change_shows_and_guards_what_auto_picks(world):
         failed = c.execute("select state, error, replay_report from change_request where id = %s", (ch["id"],)).fetchone()
     assert failed["state"] == "failed" and "auto would pick b-small" in failed["error"]
     assert failed["replay_report"]["auto"]["unserved"] == {"b-small": "model-prod/b-small: no replicas"}
+
+
+def test_a_publication_superseded_before_opa_loaded_it_still_becomes_active(world):
+    """Two publishes before any OPA reports the first: once the second is loaded everywhere,
+    the first's change is active too (its records are in the second), not left publishing,
+    which would refuse every later change to its record."""
+    db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    roles["value"] = ["project_owner"]
+    ids = []
+    for project in ("admin", "holmes"):
+        ch = reg.submit(ALICE, "project", project, "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 61}}))
+        reg.decide(BOB, ch["id"], "approve", None)
+        assert pub.publish_once()
+        ids.append(ch["id"])
+    latest = store.active("gateway-projects")
+    reg.status({"labels": {"id": "opa-1"}, "bundles": {"gateway-projects": {"active_revision": latest}}})
+    with db.tx() as c:
+        states = [c.execute("select state from change_request where id = %s", (i,)).fetchone()["state"] for i in ids]
+    assert states == ["active", "active"]
+    # and the record takes a new change again
+    assert reg.submit(ALICE, "project", "admin", "update", api.ChangeIn(spec={"limits": {"requests_per_minute": 63}}))

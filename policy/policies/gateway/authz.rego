@@ -258,7 +258,9 @@ decision := {
 # bundle, in the same step as the project's access. The service needs no entry
 # per project. Absent in the project data: no limit, sent as unlimited (the
 # override's requests_per_unit is a uint32). The budget is in micro-USD, what
-# the gateway counts (llm.cost.total x 1e6), per fixed 30-day window.
+# the gateway counts (llm.cost.total x 1e6), per fixed 30-day window. Every value fits
+# the override's uint32: projects/schema.json caps the limits at `unlimited` and the
+# budget at 4294 USD.
 #
 # The key's own limits (key_limits) go along as key_*: the gateway counts them per
 # (project, key, kind) next to the project's (project, kind), and refuses the call

@@ -32,6 +32,27 @@ test_data_class_placement_and_wildcard_tools_need_security if {
 	roles("project", "update", project, object.union(project, {"mcp_tools": ["grafana_list_dashboards"]})) == {"project_owner"}
 }
 
+test_direct_deployment_access_needs_platform_and_security if {
+	on := object.union(project, {"deployments": true, "placement": ["onprem"]})
+	roles("project", "update", object.union(project, {"placement": ["onprem"]}), on) == {"project_owner", "platform", "security"}
+	roles("project", "create", null, on) == {"platform", "security"}
+
+	# already on, or turned off: no more than any other change
+	roles("project", "update", on, object.union(on, {"owner": "other"})) == {"project_owner"}
+	roles("project", "update", on, object.union(on, {"deployments": false})) == {"project_owner"}
+
+	# and a setting can't take it away
+	r := portal.required_approvals with input as {"change": {"kind": "project", "object_id": "p", "op": "update", "before": project, "after": object.union(project, {"deployments": true})}, "requester": "alice"}
+		with data.registry.settings.approvals as no_one
+	r == {"project_owner", "platform", "security"}
+}
+
+test_keeping_a_model_out_of_auto_is_not_a_route_change if {
+	m := {"placement": "onprem", "provider": "KServe", "price": {"input": 0, "output": 0}, "deployment": "model-prod/x", "servedModel": "x"}
+	roles("model", "update", m, object.union(m, {"auto": false})) == {"platform"}
+	roles("model", "update", m, object.union(m, {"placement": "gcp"})) == {"platform", "security"}
+}
+
 test_a_new_project_needs_platform_and_security if {
 	roles("project", "create", null, project) == {"platform", "security"}
 }
