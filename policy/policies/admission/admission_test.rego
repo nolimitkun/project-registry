@@ -64,6 +64,25 @@ test_only_the_gateway_namespace_reads_the_key_map if {
 	count(vol.warnings) == 1
 }
 
+test_kserves_dry_run_copies_are_not_deployments if {
+	copy := object.union(review("LLMInferenceService", "model-prod", {"metadata": {"name": "qwen-a-validation-x6wxl"}}), {"request": {
+		"dryRun": true,
+		"userInfo": {"username": "system:serviceaccount:kserve:llmisvc-controller-manager"},
+	}})
+	r := admission.response with input as copy with data.registry as registry
+	r.warnings == []
+
+	# anyone else's dry run of an uncatalogued deployment is checked as usual
+	mine := object.union(copy, {"request": {"userInfo": {"username": "minikube-user"}}})
+	r_mine := admission.response with input as mine with data.registry as registry
+	count(r_mine.warnings) == 1
+
+	# and so is the controller's own write
+	created := object.union(copy, {"request": {"dryRun": false}})
+	r_created := admission.response with input as created with data.registry as registry
+	count(r_created.warnings) == 1
+}
+
 test_reading_the_key_map_elsewhere_is_denied if {
 	pod := {"metadata": {"name": "p"}, "spec": {"containers": [{"name": "c", "env": [{"name": "K", "valueFrom": {"secretKeyRef": {"name": "agentgateway-api-keys", "key": "k"}}}]}]}}
 	r := admission.response with input as review("Pod", "model-prod", pod) with data.registry as registry
