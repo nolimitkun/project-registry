@@ -46,12 +46,14 @@ def picks(bundles: list[Path], opa: str = "opa") -> dict[str, dict[str, str]]:
 
 
 def moves(before: dict, after: dict) -> list[dict]:
-    """Every (project, task) whose pick differs; None where there is none."""
+    """Every (project, task) whose pick differs; None where there is none. A task's move
+    that is the same as the project's move without a task (a project whose routing
+    doesn't read the task) is left out: the row without a task says it."""
     out = []
     for p in sorted(set(before) | set(after)):
         b, a = before.get(p) or {}, after.get(p) or {}
         for t in sorted(set(b) | set(a)):
-            if b.get(t) != a.get(t):
+            if b.get(t) != a.get(t) and (t == "" or (b.get(t), a.get(t)) != (b.get(""), a.get(""))):
                 out.append({"project": p, "task": t or None, "before": b.get(t), "after": a.get(t)})
     return out
 
