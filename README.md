@@ -26,7 +26,8 @@ A project data change goes like this:
    1. applies them;
    2. renders the bundle;
    3. replays recent gateway decisions from Loki. A change may only change decisions for the projects it touches. Otherwise it is marked `failed` and nothing is published;
-   4. builds the bundle, signs it with Vault Transit, uploads it and activates it.
+   4. works out again what model `auto` picks for each project, and fails the change if a pick moves onto a model nobody serves (below);
+   5. builds the bundle, signs it with Vault Transit, uploads it and activates it.
 
    All of this runs in one database transaction.
 4. **Activation.** A change is `active` once every ready OPA pod has reported its bundle revision. OPA's status plugin posts to `/opa/status`, with the pod name as a label. The ready pods come from the OPA Service's EndpointSlices, and the check also runs on every round of the publisher (`registry/activation.py`).
@@ -37,9 +38,12 @@ A policy change (`registry/policy.py`) goes like this. Every minute the publishe
 2. builds and signs the bundle, but doesn't activate it;
 3. renders the records with that commit's `gen-projects.py`;
 4. replays recent decisions under the active bundles and under the new ones;
-5. files the change, kind `policy`, object the commit.
+5. works out what `auto` picks for each project under both (below);
+6. files the change, kind `policy`, object the commit.
 
 The approvers see the commit, its diff file by file in the portal (`GET /changes/<id>/diff`; files no publish reads start folded), the `opa test` result and how many decisions would change. The platform team approves every policy change, plus whatever `portal.rego` asks for. Once it is approved, the publisher activates the records rendered at that commit, if they differ, and then the policy.
+
+**What `auto` picks** (`registry/picks.py`). The replay compares only allowed verdicts, so it can't show that a change moves a project's `model: "auto"` to another model: a free on-prem model added to the catalog wins `cheapest` for every project. So every change is filed with its moves: for each project, with no task and with each of the catalog's tasks, the model `select.rego` picks under the active bundles and under the candidate ones, rankings left out (they come from Prometheus at decision time, so `fastest` is compared as its fallback, by price). The submit (and `POST /changes/preview`) works them out and stores them as the change's evidence; the publisher and a policy change's check work them out again against what is active then. A change that moves a pick onto a KServe model nobody serves, its LLMInferenceService gone or at `replicas: 0`, is refused there (422) or fails: give the model replicas, or `auto: false` in its record, which leaves it out of the price and speed orders. The registry reads LLMInferenceServices in the serving namespaces for this; if it can't, the moves are still shown and the model is listed as unknown. The policy's own selection tests choose from a catalog of their own, so a catalog change can't fail the next policy change's `opa test`.
 
 A commit that changes the data format must work in both mixed states, because each OPA loads the two bundles on its own: the old policy with the new data, and the new policy with the old. If either decides a replayed request differently from both the old and the new pair, the commit is filed as `failed`. Stage such a change: first a policy that reads both formats, then the format change. If either bundle was published while the change waited, the publisher checks it again before activating: an unsafe result fails it, and a different outcome from what the approvers saw (the records republished or not, verdicts flipping where none did) sends it back to them. A newer commit supersedes a policy change still waiting. A commit whose test fails, or under which the records don't render, is filed as `failed` and nothing is published. A commit that changes only inert files (docs, CI, tools no publish runs: `INERT` in `registry/policy.py`), and neither bundle, is recorded as `skipped`: no approval, and OPA keeps the active commit. Any other file is presumed to matter (the renderers, the schemas and the chart act through the active commit), so an unlisted file costs an approval rather than a change that silently never applies. On a store with no policy at all (a new cluster), the branch's head is published without a change.
 
