@@ -32,12 +32,22 @@ copied_key_ids contains id if {
 }
 
 # A model deployment in a serving namespace is a catalog model's: one the
-# catalog doesn't name serves nothing the gateway routes or prices.
+# catalog doesn't name serves nothing the gateway routes or prices. KServe's
+# controller validates each deployment by dry-running a copy of it
+# (<deployment>-validation-<suffix>), which is never created: not a deployment.
 findings contains {"rule": "deployment_catalogued", "message": msg} if {
 	request.kind.kind == "LLMInferenceService"
 	request.namespace in platform.serving_namespaces
+	not kserve_validation
 	not platform.deployments[name]
 	msg := sprintf("LLMInferenceService %s is no catalog model's deployment (the project registry's catalog)", [name])
+}
+
+kserve_controller := "system:serviceaccount:kserve:llmisvc-controller-manager"
+
+kserve_validation if {
+	request.dryRun == true
+	request.userInfo.username == kserve_controller
 }
 
 # Only the gateway's namespace reads the gateway's key map.
