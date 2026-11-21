@@ -24,7 +24,10 @@ from pathlib import Path
 import requests
 
 RULE = "gateway/authz/decision"
-QUERY = '{namespace="%s", container="opa"} |= "decision_id"'
+# Only the gateway's decisions, picked in Loki: the namespace's other OPA decisions (the
+# admission fleet's, the registry's own queries of the gateway's OPA) would otherwise
+# fill the limit. OPA logs the event as compact JSON.
+QUERY = '{namespace="%s", container="opa"} |= "decision_id" |= "\\"path\\":\\"' + RULE + '\\""'
 
 
 def fetch(loki: str, namespace: str, since: str = "24h", limit: int = 2000) -> list[dict]:

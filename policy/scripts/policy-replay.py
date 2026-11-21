@@ -40,7 +40,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 POLICY = ROOT / "policies" / "gateway"
 NAMESPACE = "mini-platform"
-QUERY = '{namespace="%s", container="opa"} |= "decision_id"' % NAMESPACE
+# The rule's decisions only, picked in Loki (OPA logs the event as compact JSON): the
+# namespace's other OPA decisions, the admission fleet's and the registry's own queries
+# of the gateway's OPA, would otherwise fill the limit.
+QUERY = '{namespace="%s", container="opa"} |= "decision_id" |= "\\"path\\":\\"%s\\""'
 
 
 @contextlib.contextmanager
@@ -71,8 +74,9 @@ def loki_url(given):
         pf.terminate()
 
 
-def fetch(url, since, limit):
-    params = urllib.parse.urlencode({"query": QUERY, "since": since, "limit": limit, "direction": "backward"})
+def fetch(url, since, limit, rule):
+    params = urllib.parse.urlencode({"query": QUERY % (NAMESPACE, rule), "since": since, "limit": limit,
+                                     "direction": "backward"})
     with urllib.request.urlopen(f"{url}/loki/api/v1/query_range?{params}", timeout=60) as r:
         body = json.load(r)
     for stream in body["data"]["result"]:
@@ -147,7 +151,7 @@ def main():
         sys.exit("opa not found on PATH")
 
     with loki_url(args.loki) as url:
-        events = list(fetch(url, args.since, args.limit))
+        events = list(fetch(url, args.since, args.limit, args.rule))
 
     replayable, skipped_rule, skipped_old = [], 0, 0
     for e in events:
