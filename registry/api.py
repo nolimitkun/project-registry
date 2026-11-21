@@ -186,6 +186,12 @@ class Registry:
                             "state in ('pending_approval', 'approved', 'publishing')", (kind, oid)).fetchone()
         if pending:
             raise HTTPException(409, f"change {pending['id']} for {kind} {oid} is not finished yet")
+        # who may propose it, before any work on it: a refusal says nothing of other records
+        change = {"kind": kind, "object_id": oid, "op": op, "before": before, "after": after}
+        owner = body.owner_group if (kind == "project" and op == "create") else \
+            self.owner_group(c, kind, oid, after or before)
+        if not self.may_submit(change, user, owner):
+            raise HTTPException(403, f"you may not propose changes to {kind} {oid}")
         records = dbm.resources(c)
         if after is None:
             records[kind].pop(oid, None)
@@ -210,11 +216,6 @@ class Registry:
             auto = self.auto_impact(policy_rev, rendered, records.get("model") or {}, Path(tmp))
         if auto.get("refusal"):
             raise HTTPException(422, auto["refusal"])
-        change = {"kind": kind, "object_id": oid, "op": op, "before": before, "after": after}
-        owner = body.owner_group if (kind == "project" and op == "create") else \
-            self.owner_group(c, kind, oid, after or before)
-        if not self.may_submit(change, user, owner):
-            raise HTTPException(403, f"you may not propose changes to {kind} {oid}")
         return change, owner, self.required_approvals(change, user.name), auto
 
     def auto_impact(self, policy_rev: str, rendered: Path, models: dict, tmp: Path) -> dict:

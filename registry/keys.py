@@ -82,9 +82,10 @@ def reconcile(kv, mount: str, want: dict[str, str], new_key=lambda: secrets.toke
     old key is kept as the previous one (a grace period) or False if it is revoked now;
     keep_previous: key ids whose previous key is still in its grace period (any other
     previous key is dropped). Calls wrote(map name, diff) after each map it writes, so a
-    write is recorded even if the next one fails; returns the gateway map's diff
-    {"added", "removed", "changed", "issued"} (key ids, never keys; "issued": those that
-    got a fresh key) when it wrote anything, None when both were current already."""
+    write is recorded even if the next one fails. Returns a diff of key ids, never keys:
+    the gateway map's {"added", "removed", "changed", "issued"} ("issued": those that got
+    a fresh key) when it changed, else the clients' map's {"added", "removed", "changed"};
+    None when both were current already."""
     if not want:
         raise ValueError("no key ids: refusing to empty the gateway's key maps")
     gateway, clients = kv.kv_get(mount, GATEWAY) or {}, kv.kv_get(mount, CLIENTS) or {}

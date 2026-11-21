@@ -1,5 +1,5 @@
 # Who has to approve a change in the project registry (nolimitkun/project-registry,
-# docs/project-registry.md "Approval rules are policy"). The registry asks for
+# docs/design.md "Approval rules are policy"). The registry asks for
 # data.portal.required_approvals with the change as input:
 #
 #   input.change   {kind: project | agent | exception | policy | model | google_api |
@@ -61,6 +61,16 @@ floor contains "platform" if {
 floor contains "platform" if change.kind in (catalog_kinds | {"policy", "setting"})
 
 floor contains "security" if change.kind in {"policy", "setting"}
+
+# Direct calls to every on-prem model deployment, past the catalog (deployments: true,
+# for the onboarding pipeline): the platform team and security, whatever the setting.
+floor contains role if {
+	change.kind == "project"
+	change.op != "delete"
+	object.get(after, "deployments", false) == true
+	object.get(before, "deployments", false) != true
+	some role in {"platform", "security"}
+}
 
 # --- who approves each trigger: the registry's approvals setting ---
 approvals := lib.settings.approvals
@@ -155,11 +165,12 @@ triggers contains "agent.autonomy_raised" if {
 }
 
 # A model's or a Google API's placement, a new one, or a model's provider settings
-# (where calls go).
+# (where calls go). Not its price (model.price_changed) or whether auto may pick it
+# (auto: false narrows what auto picks; the change's auto evidence shows the moves).
 triggers contains "catalog.route_changed" if {
 	change.kind in {"model", "google_api"}
 	change.op != "delete"
-	object.remove(before, ["price"]) != object.remove(after, ["price"])
+	object.remove(before, ["price", "auto"]) != object.remove(after, ["price", "auto"])
 }
 
 triggers contains "model.price_changed" if {

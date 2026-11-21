@@ -66,14 +66,17 @@ def reports(c, pods: set[str] | None, window: str = "5 minutes") -> list[dict]:
 
 def activate_due(c, data_bundle: str, pods: set[str] | None, window: str = "5 minutes",
                  policy_bundle: str = "gateway-policy") -> list[str]:
-    """Marks active every published revision all OPAs have loaded, of both bundles; returns them."""
+    """Marks active every published revision all OPAs have loaded, of both bundles; returns them.
+    A revision superseded before every OPA loaded it counts once a later one is loaded
+    everywhere: the later one holds its changes (data: the records then; policy: the
+    branch, which only moves forward), so they don't stay publishing."""
     rows = reports(c, pods, window)
     if not rows:
         return []
     done = _activate_policy(c, policy_bundle, rows)
     everywhere = min(r["bundles"].get(data_bundle) or "" for r in rows)   # projects-NNNNNNNN sorts like its number
     for pub in c.execute("""select revision, change_ids from publication
-                            where active_at is null and state = 'active' and revision <= %s""",
+                            where active_at is null and state in ('active', 'superseded') and revision <= %s""",
                          (everywhere,)).fetchall():
         c.execute("update publication set active_at = now() where revision = %s", (pub["revision"],))
         c.execute("update change_request set state = 'active', updated_at = now() "
@@ -85,13 +88,19 @@ def activate_due(c, data_bundle: str, pods: set[str] | None, window: str = "5 mi
 
 def _activate_policy(c, policy_bundle: str, rows: list[dict]) -> list[str]:
     """The active policy publication, once every OPA reports its commit (commits don't sort)."""
-    pub = c.execute("""select revision, change_id from policy_publication
+    pub = c.execute("""select revision, seq, change_id from policy_publication
                        where state = 'active' and active_at is null""").fetchone()
     if not pub or any(r["bundles"].get(policy_bundle) != pub["revision"] for r in rows):
         return []
-    c.execute("update policy_publication set active_at = now() where revision = %s", (pub["revision"],))
-    if pub["change_id"]:
-        c.execute("update change_request set state = 'active', updated_at = now() "
-                  "where id = %s and state = 'publishing'", (pub["change_id"],))
-    dbm.audit(c, "opa", "active", f"{policy_bundle}@{pub['revision']}", None, {"change": pub["change_id"]})
-    return [pub["revision"]]
+    # and those it superseded before every OPA had them (the branch only moves forward)
+    earlier = c.execute("""select revision, change_id from policy_publication
+                           where state = 'superseded' and active_at is null and seq < %s""", (pub["seq"],)).fetchall()
+    done = []
+    for p in [*earlier, pub]:
+        c.execute("update policy_publication set active_at = now() where revision = %s", (p["revision"],))
+        if p["change_id"]:
+            c.execute("update change_request set state = 'active', updated_at = now() "
+                      "where id = %s and state = 'publishing'", (p["change_id"],))
+        dbm.audit(c, "opa", "active", f"{policy_bundle}@{p['revision']}", None, {"change": p["change_id"]})
+        done.append(p["revision"])
+    return done

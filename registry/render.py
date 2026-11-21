@@ -116,7 +116,13 @@ class Renderer:
                 shutil.rmtree(tmp, ignore_errors=True)
                 raise subprocess.CalledProcessError(fetch.returncode, fetch.args, fetch.stdout, fetch.stderr)
             subprocess.run(["git", "-C", str(tmp), "checkout", "-q", "FETCH_HEAD"], check=True)
-            tmp.rename(path)
+            try:
+                tmp.rename(path)
+            except OSError:
+                # another thread (the API answers in threads) checked the commit out first
+                shutil.rmtree(tmp, ignore_errors=True)
+                if not (path / ".git").exists():
+                    raise
         return path / self.subdir if self.subdir else path
 
     @contextmanager

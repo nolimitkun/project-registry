@@ -82,8 +82,8 @@ def effective(answer: dict) -> dict:
 
 
 # The alerts about what the registry runs or watches (mini-platform-deployment
-# app-resources/alerts/agentgateway-projects.yml).
-ALERT_PREFIXES = ("Gateway", "ProjectRegistry")
+# app-resources/alerts/agentgateway-projects.yml), OPA Control Plane's included.
+ALERT_PREFIXES = ("Gateway", "ProjectRegistry", "OpaControlPlane")
 
 
 def alerts(prometheus_url: str | None) -> dict:

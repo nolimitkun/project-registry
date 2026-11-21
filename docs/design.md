@@ -184,7 +184,9 @@ Today's approvals setting, with the floors:
 | Raise a limit or the budget | plus the cost owner (a key's own limits, which stay within the project's, need only the project owner) |
 | Change `data_class` or widen the placement, add an exception, a wildcard in `mcp_tools`, create an agent beyond `read-only` or raise an agent's `autonomy` (or give it more tool risks) | plus security |
 | Create a project | the platform team and security |
-| A model or Google API: new, or any change but its price; a tool made less risky, or a new one classed below `irreversible`; the MCP targets or serving namespaces | the platform team and security |
+| Turn on a project's `deployments` (direct calls to every on-prem model deployment, past the catalog) | plus the platform team and security (floors) |
+| A model or Google API: new, or any change but its price or `auto`; a tool made less risky, or a new one classed below `irreversible`; the MCP targets or serving namespaces | the platform team and security |
+| A model's `auto` alone | the platform team (the change shows what `auto` would pick) |
 | A model's price | the platform team and the cost owner |
 | A policy commit, or a setting | the platform team and security (floors) |
 
@@ -260,8 +262,10 @@ The publisher:
    one publish every 30 seconds.
 2. **Renders** every project's `data.json` with the shared library. Only the
    changed projects differ, and the output has a stable hash.
-3. **Replays** the last N days of decision logs against the new data bundle
-   and the active policy bundle (`scripts/policy-replay.py`):
+3. **Replays** recent decision logs from Loki (the last 24 hours, at most
+   2,000 decisions: `REPLAY_SINCE`, `REPLAY_LIMIT`) against the new data bundle
+   and the active policy bundle (`registry/replay.py`; `scripts/policy-replay.py`
+   does the same from a checkout):
    - decisions change only for the changed projects: continue;
    - decisions change for any other project: stop and mark the change
      `failed`. This is the safety valve.
@@ -276,8 +280,8 @@ The publisher:
 
 **A policy change** goes through the same publisher. Its source is Git, not
 the portal: the pull request is reviewed and tested there (CI: `opa test`,
-the two-bundle load), and merging it changes nothing yet. Every minute the
-publisher checks `main`. For a new commit it:
+the two-bundle load), and merging it changes nothing yet. Every `POLICY_POLL`
+seconds (60 by default; the deployment sets 15) the publisher checks `main`. For a new commit it:
 
 1. runs `opa test`, and builds and signs the bundle without activating it;
 2. renders the records with that commit's `gen-projects.py`;

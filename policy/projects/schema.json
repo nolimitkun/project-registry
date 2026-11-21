@@ -75,16 +75,18 @@
       "properties": {
         "requests_per_minute": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 4000000000
         },
         "tokens_per_minute": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 4000000000
         }
       }
     },
     "budget": {
-      "description": "Spend cap in USD over a fixed 30-day window (the rate-limit service's month: 30-day periods counted from the Unix epoch, not calendar months), at agentgateway's prices (the catalog's). Self-hosted models cost nothing. Charged when a call completes, so the call that crosses the cap still finishes. Absent: no cap.",
+      "description": "Spend cap in USD over a fixed 30-day window (the rate-limit service's month: 30-day periods counted from the Unix epoch, not calendar months), at agentgateway's prices (the catalog's). Self-hosted models cost nothing. Charged when a call completes, so the call that crosses the cap still finishes. At most 4294 USD: the rate-limit service counts it in micro-USD as a 32-bit number. Absent: no cap.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -92,8 +94,10 @@
       ],
       "properties": {
         "usd_per_30_days": {
+          "description": "At most 4294: the rate-limit service counts it in micro-USD as a 32-bit number (authz.rego limits).",
           "type": "number",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "maximum": 4294
         }
       }
     },
