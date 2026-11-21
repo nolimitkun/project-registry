@@ -39,6 +39,7 @@ from .bundles import Store, build, signed_keyid
 from .policy import PolicyWatch, Rejected, same_data
 from .render import Renderer, RenderError, renderer_from_env
 from .replay import fetch, replay
+from . import picks
 
 log = logging.getLogger("publisher")
 
@@ -50,10 +51,18 @@ class ReplayStopped(Exception):
         self.report = report
 
 
+class PicksStopped(Exception):
+    """The change would move auto onto a model nobody serves (picks.py)."""
+
+    def __init__(self, report: dict, why: str):
+        super().__init__(why)
+        self.report = report
+
+
 # A change that fails for what it is (its records don't render, the replay stops it, a
 # recheck refuses it) is the change's failure. Anything else (signing, the store, Vault)
 # is the publisher's: the change is failed all the same, and the error goes on to health.py.
-CHANGE_FAULTS = (ReplayStopped, RenderError, Rejected)
+CHANGE_FAULTS = (ReplayStopped, PicksStopped, RenderError, Rejected)
 
 
 class Everyone(set):
@@ -80,6 +89,7 @@ class Publisher:
         self.events = events                      # () -> recent decision log events
         self.policy_bundle, self.data_bundle, self.opa = policy_bundle, data_bundle, opa
         self.policy = policy
+        self.serving = picks.serving              # replaced in tests
 
     def publish_once(self) -> str | None:
         """Publishes what is approved: a policy change first, else every approved data change
@@ -304,6 +314,16 @@ class Publisher:
             report = replay(self.events(), policy, active, data_dir, touched, self.opa)
             if not report["ok"]:
                 raise ReplayStopped(report)
+            # the auto picks again, against what is active now (another change may have
+            # published since the submit)
+            try:
+                report["auto"] = picks.impact([policy, active], [policy, data_dir], records.get("model") or {},
+                                              self.opa, self.serving)
+            except RuntimeError as e:
+                report["auto"] = {"error": str(e)[-500:]}
+            why = picks.refusal(report["auto"]) if "moves" in report["auto"] else None
+            if why:
+                raise PicksStopped(report, why)
             out = tmp / "bundle.tar.gz"
             build(data_dir, revision, self.signer, out, opa=self.opa)
             self.store.put_revision(self.data_bundle, revision, out)

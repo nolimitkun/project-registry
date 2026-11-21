@@ -26,6 +26,26 @@ prom_served(_) := prom_result({"gemini-3.5-flash-lite": "0.48", "gemini-3.8-flas
 # Its catalog name (from before the route rewrote it) and its served name, both in the window.
 prom_both_names(_) := prom_result({"qwen3.6-27b": "0.9", served_qwen: "0.3"})
 
+# The catalog these tests choose from: the policy's fixture (fixtures/records.yaml),
+# not the registry's live records, which the registry also tests this policy with.
+# A catalog change then can't fail a policy change; its effect on auto is the
+# change's own evidence (the registry's picks.py).
+catalog := {
+	"models": {
+		"deepseek-v4-pro": {"placement": "external", "provider": "Deepseek", "price": {"input": 0.66, "output": 1.98}},
+		"gemini-3.5-flash": {"placement": "gcp", "provider": "VertexAI", "price": {"input": 1.5, "output": 9}},
+		"gemini-3.5-flash-lite": {"placement": "gcp", "provider": "VertexAI", "price": {"input": 0.3, "output": 2.5}},
+		"gemini-3.8-flash": {"placement": "gcp", "provider": "VertexAI", "price": {"input": 0.75, "output": 3.75}},
+		"gemini-4-argon": {"placement": "gcp", "provider": "VertexAI", "price": {"input": 2, "output": 10}},
+		"qwen3.6-27b": {"placement": "onprem", "provider": "KServe", "price": {"input": 0, "output": 0}, "served_model": served_qwen},
+	},
+	"tasks": {
+		"code": ["deepseek-v4-pro", "gemini-3.8-flash", "qwen3.6-27b"],
+		"general": ["gemini-3.5-flash-lite", "qwen3.6-27b"],
+		"reasoning": ["gemini-4-argon", "deepseek-v4-pro", "qwen3.6-27b"],
+	},
+}
+
 prom_down(_) := {"status_code": 0, "error": {"code": "eval_http_send_network_error", "message": "connection refused"}}
 
 prom_500(_) := {"status_code": 500, "body": {"status": "error"}}
@@ -40,12 +60,12 @@ proj(overrides) := object.union(
 )
 
 pick(p, task) := m if {
-	m := select.result.model with input as {"project": "t", "task": task}
+	m := select.result.model with input as {"project": "t", "task": task} with data.registry.catalog as catalog
 		with data.projects.t as p
 }
 
 pick_no_task(p) := m if {
-	m := select.result.model with input as {"project": "t"}
+	m := select.result.model with input as {"project": "t"} with data.registry.catalog as catalog
 		with data.projects.t as p
 }
 
@@ -58,15 +78,25 @@ test_cheapest if {
 }
 
 test_auto_false_models_are_never_picked_by_price_or_speed if {
-	small := {"placement": "onprem", "provider": "KServe", "price": {"input": 0, "output": 0}, "served_model": "s", "auto": false}
-	pick_no_task(proj({})) == "qwen3.6-27b" with data.registry.catalog.models["qwen2.5-1.5b"] as small
+	small := {"placement": "onprem", "provider": "KServe", "price": {"input": 0, "output": 0}, "served_model": "s"}
+	kept_out := object.union(catalog, {"models": {"qwen2.5-1.5b": object.union(small, {"auto": false})}})
+	plain := object.union(catalog, {"models": {"qwen2.5-1.5b": small}})
+
+	# free, it would win cheapest on its name
+	select.result.model == "qwen2.5-1.5b" with input as {"project": "t"} with data.projects.t as proj({})
+		with data.registry.catalog as plain
+
+	select.result.model == "qwen3.6-27b" with input as {"project": "t"} with data.projects.t as proj({})
+		with data.registry.catalog as kept_out
 	select.result.model == "qwen3.6-27b" with input as {"project": "t"}
 		with data.projects.t as proj({"routing": "fastest"})
 		with http.send as prom_down
-		with data.registry.catalog.models["qwen2.5-1.5b"] as small
+		with data.registry.catalog as kept_out
 
 	# named, it is still the project's to use
-	pick_no_task(proj({"routing": "fixed:qwen2.5-1.5b"})) == "qwen2.5-1.5b" with data.registry.catalog.models["qwen2.5-1.5b"] as small
+	select.result.model == "qwen2.5-1.5b" with input as {"project": "t"}
+		with data.projects.t as proj({"routing": "fixed:qwen2.5-1.5b"})
+		with data.registry.catalog as kept_out
 }
 
 test_cheapest_respects_models_allow if {
@@ -74,42 +104,42 @@ test_cheapest_respects_models_allow if {
 }
 
 test_fastest_uses_rankings if {
-	select.result.model == "gemini-3.8-flash" with input as {"project": "t"}
+	select.result.model == "gemini-3.8-flash" with input as {"project": "t"} with data.registry.catalog as catalog
 		with data.projects.t as proj({"routing": "fastest"})
 		with http.send as prom_fast_flash
 }
 
 test_fastest_without_rankings_is_cheapest if {
-	select.result.model == "qwen3.6-27b" with input as {"project": "t"}
+	select.result.model == "qwen3.6-27b" with input as {"project": "t"} with data.registry.catalog as catalog
 		with data.projects.t as proj({"routing": "fastest"})
 		with http.send as prom_down
-	select.result.model == "qwen3.6-27b" with input as {"project": "t"}
+	select.result.model == "qwen3.6-27b" with input as {"project": "t"} with data.registry.catalog as catalog
 		with data.projects.t as proj({"routing": "fastest"})
 		with http.send as prom_500
 }
 
 test_rankings_parse if {
-	rankings.latency_ms == {"gemini-3.8-flash": 120, "qwen3.6-27b": 900} with http.send as prom_fast_flash
+	rankings.latency_ms == {"gemini-3.8-flash": 120, "qwen3.6-27b": 900} with http.send as prom_fast_flash with data.registry.catalog as catalog
 
 	# NaN and infinities (too few samples, empty buckets) are left unranked.
-	rankings.latency_ms == {"deepseek-v4-pro": 1500} with http.send as prom_odd
-	rankings.latency_ms == {} with http.send as prom_down
+	rankings.latency_ms == {"deepseek-v4-pro": 1500} with http.send as prom_odd with data.registry.catalog as catalog
+	rankings.latency_ms == {} with http.send as prom_down with data.registry.catalog as catalog
 }
 
 test_rankings_map_served_names_to_the_catalog if {
-	rankings.latency_ms == {"gemini-3.5-flash-lite": 480, "gemini-3.8-flash": 1920, "qwen3.6-27b": 480}
+	rankings.latency_ms == {"gemini-3.5-flash-lite": 480, "gemini-3.8-flash": 1920, "qwen3.6-27b": 480} with data.registry.catalog as catalog
 		with http.send as prom_served
 
 	# two labels for one model: the faster counts
-	rankings.latency_ms == {"qwen3.6-27b": 300} with http.send as prom_both_names
+	rankings.latency_ms == {"qwen3.6-27b": 300} with http.send as prom_both_names with data.registry.catalog as catalog
 }
 
 test_fastest_ranks_a_kserve_model if {
 	# as fast as flash-lite and cheaper: Qwen, not left unranked behind the slower Gemini
-	select.result.model == "qwen3.6-27b" with input as {"project": "t"}
+	select.result.model == "qwen3.6-27b" with input as {"project": "t"} with data.registry.catalog as catalog
 		with data.projects.t as proj({"routing": "fastest"})
 		with http.send as prom_served
-	array.slice(select.by_speed, 0, 3) == ["qwen3.6-27b", "gemini-3.5-flash-lite", "gemini-3.8-flash"] with input as {"project": "t"}
+	array.slice(select.by_speed, 0, 3) == ["qwen3.6-27b", "gemini-3.5-flash-lite", "gemini-3.8-flash"] with input as {"project": "t"} with data.registry.catalog as catalog
 		with data.projects.t as proj({"routing": "fastest"})
 		with http.send as prom_served
 }
@@ -138,7 +168,7 @@ test_semantic_without_task_is_cheapest if {
 
 test_semantic_uses_exceptions if {
 	# kagent: internal, with a DeepSeek exception.
-	select.result.model == "deepseek-v4-pro" with input as {"project": "kagent", "task": "code"}
+	select.result.model == "deepseek-v4-pro" with input as {"project": "kagent", "task": "code"} with data.registry.catalog as catalog
 		with data.projects.kagent.routing as "semantic"
 }
 
@@ -150,8 +180,8 @@ test_fixed if {
 }
 
 test_no_result if {
-	not select.result with input as {"project": "nobody"}
-	not select.result with input as {"project": "t"}
+	not select.result with input as {"project": "nobody"} with data.registry.catalog as catalog
+	not select.result with input as {"project": "t"} with data.registry.catalog as catalog
 		with data.projects.t as proj({"models_allow": ["gemini-*"], "placement": ["onprem"]})
 }
 
@@ -176,15 +206,15 @@ test_selection_within_allowed if {
 # Either no model at all, or one the project may use.
 within_allowed(project_id, variant, task) if {
 	projects := object.union(data.projects, {project_id: variant})
-	not select.result with input as {"project": project_id, "task": task}
+	not select.result with input as {"project": project_id, "task": task} with data.registry.catalog as catalog
 		with data.projects as projects
 }
 
 within_allowed(project_id, variant, task) if {
 	projects := object.union(data.projects, {project_id: variant})
-	m := select.result.model with input as {"project": project_id, "task": task}
+	m := select.result.model with input as {"project": project_id, "task": task} with data.registry.catalog as catalog
 		with data.projects as projects
-	allowed := lib.allowed(project_id) with data.projects as projects
+	allowed := lib.allowed(project_id) with data.projects as projects with data.registry.catalog as catalog
 	m in allowed
 }
 
@@ -204,8 +234,8 @@ test_selection_within_allowed_with_rankings if {
 
 # With an agent's key, "auto" stays within the agent's models.
 test_auto_with_agent_key_stays_in_agent_scope if {
-	r := select.result with input as {"project": "kagent", "key_id": "kagent-k8s-agent"}
+	r := select.result with input as {"project": "kagent", "key_id": "kagent-k8s-agent"} with data.registry.catalog as catalog
 	r.model == "deepseek-v4-pro"
-	r2 := select.result with input as {"project": "kagent", "key_id": "kagent"}
+	r2 := select.result with input as {"project": "kagent", "key_id": "kagent"} with data.registry.catalog as catalog
 	r2.model != "deepseek-v4-pro"
 }

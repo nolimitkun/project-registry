@@ -41,7 +41,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from . import approvals
+from . import approvals, picks
 from . import db as dbm
 from .bundles import Store, build, signed_keyid
 from .render import Renderer, RenderError
@@ -204,6 +204,7 @@ class PolicyWatch:
         self.db, self.store, self.signer, self.renderer, self.source = db, store, signer, renderer, source
         self.events, self.opa_url, self.opa = events, opa_url, opa
         self.policy_bundle, self.data_bundle = policy_bundle, data_bundle
+        self.serving = picks.serving              # replaced in tests
 
     def ensure_built(self, sha: str, tmp: Path) -> Path:
         """The commit's bundle in the store, signed with the current key; a local copy of it."""
@@ -354,6 +355,15 @@ class PolicyWatch:
             events = self.events()
             report |= replay_all(events, [old_policy, old_data], [new_policy, new_data], self.opa)
             report["records_change"] = not same_data(new_data, old_data)
+            # what auto picks for each project under the new policy and records (picks.py)
+            try:
+                report["auto"] = picks.impact([old_policy, old_data], [new_policy, new_data],
+                                              records.get("model") or {}, self.opa, self.serving)
+            except RuntimeError as e:
+                report["auto"] = {"error": str(e)[-500:]}
+            why = picks.refusal(report["auto"]) if "moves" in report["auto"] else None
+            if why:
+                raise Rejected(f"at {sha[:12]}, {why}")
             if report["records_change"]:
                 # Each OPA loads the two bundles on its own, so for a while it may run the old
                 # policy with the new data, or the new policy with the old. Neither may decide

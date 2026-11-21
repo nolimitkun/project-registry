@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 import datetime as dt
 
-from . import activation, approvals, health, usage, wakeup
+from . import activation, approvals, health, picks, usage, wakeup
 from . import db as dbm
 from .auth import ROLE_GROUPS, User, current_user
 from . import bundles, insight
@@ -119,6 +119,8 @@ class Registry:
         self.policy_bundle, self.data_bundle = policy_bundle, data_bundle
         self.signing_keyid = signing_keyid or os.environ.get("SIGNING_KEYID")
         self.opa_pods = activation.ready_opa_pods        # replaced in tests
+        self.serving = picks.serving                     # replaced in tests
+        self.opa = "opa"
 
     # --- approvals ---
     def required_approvals(self, change: dict, requester: str) -> list[str]:
@@ -159,9 +161,11 @@ class Registry:
         return [r for r in change["required_approvals"] if r not in done and r in mine]
 
     # --- changes ---
-    def check(self, c, user: User, kind: str, oid: str, op: str, body: ChangeIn) -> tuple[dict, str | None, list[str]]:
-        """Everything a submit checks, without filing it: the change, its owner group and who
-        must approve it. Raises what a submit would."""
+    def check(self, c, user: User, kind: str, oid: str, op: str,
+              body: ChangeIn) -> tuple[dict, str | None, list[str], dict]:
+        """Everything a submit checks, without filing it: the change, its owner group, who
+        must approve it, and what model auto picks for each project before and after
+        (picks.py). Raises what a submit would."""
         row = c.execute("select spec from resource where kind = %s and id = %s", (kind, oid)).fetchone()
         before = row["spec"] if row else None
         if op == "create":
@@ -200,31 +204,53 @@ class Registry:
                 raise HTTPException(503, f"can't read the deployment repo's kagent wiring: {e}") from e
         with tempfile.TemporaryDirectory() as tmp:
             try:
-                self.renderer.render(records, policy_rev, Path(tmp) / "out", env=wiring)
+                rendered = self.renderer.render(records, policy_rev, Path(tmp) / "out", env=wiring)
             except RenderError as e:
                 raise HTTPException(422, {"errors": e.errors}) from e
+            auto = self.auto_impact(policy_rev, rendered, records.get("model") or {}, Path(tmp))
+        if auto.get("refusal"):
+            raise HTTPException(422, auto["refusal"])
         change = {"kind": kind, "object_id": oid, "op": op, "before": before, "after": after}
         owner = body.owner_group if (kind == "project" and op == "create") else \
             self.owner_group(c, kind, oid, after or before)
         if not self.may_submit(change, user, owner):
             raise HTTPException(403, f"you may not propose changes to {kind} {oid}")
-        return change, owner, self.required_approvals(change, user.name)
+        return change, owner, self.required_approvals(change, user.name), auto
+
+    def auto_impact(self, policy_rev: str, rendered: Path, models: dict, tmp: Path) -> dict:
+        """picks.impact of the candidate records against the active bundles. Evidence, so an
+        evaluation that fails is reported, not raised; a move onto an unserved model is
+        the change's refusal."""
+        data_rev = self.store.active(self.data_bundle)
+        if not data_rev:
+            return {"error": f"no active {self.data_bundle} bundle to compare with"}
+        try:
+            policy = self.store.fetch(self.policy_bundle, policy_rev, tmp / "policy.tar.gz")
+            data = self.store.fetch(self.data_bundle, data_rev, tmp / "data.tar.gz")
+            report = picks.impact([policy, data], [policy, rendered], models, self.opa, self.serving)
+        except (RuntimeError, OSError) as e:
+            log.warning("auto picks: %s", e)
+            return {"error": str(e)[-500:]}
+        report["refusal"] = picks.refusal(report)
+        return report
 
     def preview(self, user: User, kind: str, oid: str, op: str, body: ChangeIn) -> dict:
         """What a submit would file, without filing it: who must approve, and what changes."""
         with self.db.tx() as c:
-            change, owner, required = self.check(c, user, kind, oid, op, body)
-        return {**change, "owner_group": owner, "required_approvals": required}
+            change, owner, required, auto = self.check(c, user, kind, oid, op, body)
+        return {**change, "owner_group": owner, "required_approvals": required, "auto": auto}
 
     def submit(self, user: User, kind: str, oid: str, op: str, body: ChangeIn) -> dict:
         with self.db.tx() as c:
-            change, _, required = self.check(c, user, kind, oid, op, body)
+            change, _, required, auto = self.check(c, user, kind, oid, op, body)
             before, after = change["before"], change["after"]
+            # the auto picks are the approvers' evidence until the publish replaces it with its own
             row = c.execute("""insert into change_request (kind, object_id, op, before, after, state,
-                                   required_approvals, created_by)
-                               values (%s, %s, %s, %s, %s, 'pending_approval', %s, %s) returning *""",
+                                   required_approvals, created_by, replay_report)
+                               values (%s, %s, %s, %s, %s, 'pending_approval', %s, %s, %s) returning *""",
                             (kind, oid, op, Jsonb(before) if before is not None else None,
-                             Jsonb(after) if after is not None else None, Jsonb(required), user.name)).fetchone()
+                             Jsonb(after) if after is not None else None, Jsonb(required), user.name,
+                             Jsonb({"auto": auto}))).fetchone()
             if kind == "project" and op == "create":
                 c.execute("insert into project_owner values (%s, %s) on conflict (project_id) do update "
                           "set owner_group = excluded.owner_group", (oid, body.owner_group))

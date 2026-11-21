@@ -265,9 +265,14 @@ The publisher:
    - decisions change only for the changed projects: continue;
    - decisions change for any other project: stop and mark the change
      `failed`. This is the safety valve.
-4. **Builds, signs and uploads** the bundle under its revision, then moves
+4. **Works out what `auto` picks** for each project and task, before and
+   after (`registry/picks.py`), which the replay can't show: it compares
+   allowed verdicts only. A pick moved onto a KServe model nobody serves (no
+   replicas, or gone) stops the change, as at its submit, where the moves
+   are filed as the approvers' evidence.
+5. **Builds, signs and uploads** the bundle under its revision, then moves
    `latest`.
-5. **Waits for OPA** to report the revision, then marks the change `active`.
+6. **Waits for OPA** to report the revision, then marks the change `active`.
 
 **A policy change** goes through the same publisher. Its source is Git, not
 the portal: the pull request is reviewed and tested there (CI: `opa test`,

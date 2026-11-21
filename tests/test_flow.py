@@ -936,3 +936,72 @@ def test_a_key_is_rotated_in_place_with_a_grace_period(world):
             ["rotate_key", "revoke_previous_key", "rotate_key"]
     m = TestClient(api.create_app(reg)).get("/metrics").text
     assert 'gateway_key_issued_timestamp_seconds{project="open-webui",key_id="open-webui"}' in m
+
+
+def test_a_change_shows_and_guards_what_auto_picks(world):
+    """The submit stores each project's auto picks before and after (picks.py) for the
+    approvers, and refuses one that moves a pick onto a model nobody serves."""
+    db, store, reg, pub, roles = world["db"], world["store"], world["reg"], world["pub"], world["roles"]
+    rev = store.active("gateway-policy")
+    # the real policy bundle at that commit, as the publisher builds it, in place of the placeholder
+    out = Path(world["renderer"].checkout(rev).parent) / "policy.tar.gz"
+    bundles.build(world["renderer"].checkout(rev) / "policies" / "gateway", rev, world["signer"], out, opa=OPA)
+    store.put_revision("gateway-policy", rev, out)
+    importer.run(db, store, world["signer"], world["renderer"], "platform-admins", SEED, "seed", opa=OPA)
+    roles["value"] = ["cost_owner", "platform"]
+    small = {"placement": "onprem", "provider": "KServe", "price": {"input": 0, "output": 0},
+             "deployment": "model-prod/small", "servedModel": "Small/Model"}
+    asked = []
+
+    def scaled_to_zero(deployment):
+        asked.append(deployment)
+        return "no replicas"
+
+    reg.serving = pub.serving = scaled_to_zero
+    with pytest.raises(HTTPException) as e:          # free, so it wins cheapest for every project
+        reg.submit(ALICE, "model", "a-small", "create", api.ChangeIn(spec=small))
+    assert e.value.status_code == 422 and "auto would pick a-small for " in e.value.detail
+    assert "model-prod/small: no replicas" in e.value.detail and "auto: false" in e.value.detail
+    assert asked == ["model-prod/small"]
+
+    # kept out of auto: nothing moves, and it is filed with that as its evidence
+    ch = reg.submit(ALICE, "model", "a-small", "create", api.ChangeIn(spec={**small, "auto": False}))
+    assert ch["replay_report"]["auto"] == {"moves": [], "unserved": {}, "unknown": [], "refusal": None}
+    reg.decide(BOB, ch["id"], "approve", None)
+    reg.decide(COST, ch["id"], "approve", None)
+    assert pub.publish_once()
+    with db.tx() as c:
+        report = c.execute("select replay_report from change_request where id = %s", (ch["id"],)).fetchone()["replay_report"]
+    assert report["auto"]["moves"] == []
+
+    # served: the moves are the evidence, project by project and task by task
+    reg.serving = lambda deployment: None
+    shown = reg.preview(ALICE, "model", "b-small", "create",
+                        api.ChangeIn(spec={**small, "deployment": "model-prod/b-small"}))
+    moves = shown["auto"]["moves"]
+    assert moves and all(m["after"] == "b-small" for m in moves) and shown["auto"]["refusal"] is None
+    assert {"project", "task", "before", "after"} == set(moves[0])
+    assert any(m["task"] is None for m in moves)      # the pick without a task moved too
+
+    # a cluster that can't be asked: reported, not refused
+    def unreachable(deployment):
+        raise OSError("no service account token")
+
+    reg.serving = unreachable
+    shown = reg.preview(ALICE, "model", "b-small", "create",
+                        api.ChangeIn(spec={**small, "deployment": "model-prod/b-small"}))
+    assert shown["auto"]["unknown"] == ["b-small"] and shown["auto"]["refusal"] is None
+
+    # scaled to zero between the submit and the publish: the publish refuses it
+    reg.serving = lambda deployment: None
+    ch = reg.submit(ALICE, "model", "b-small", "create", api.ChangeIn(spec={**small, "deployment": "model-prod/b-small"}))
+    assert ch["replay_report"]["auto"]["moves"]
+    reg.decide(BOB, ch["id"], "approve", None)
+    reg.decide(COST, ch["id"], "approve", None)
+    before = store.active("gateway-projects")
+    pub.serving = scaled_to_zero
+    assert pub.publish_once() is None and store.active("gateway-projects") == before
+    with db.tx() as c:
+        failed = c.execute("select state, error, replay_report from change_request where id = %s", (ch["id"],)).fetchone()
+    assert failed["state"] == "failed" and "auto would pick b-small" in failed["error"]
+    assert failed["replay_report"]["auto"]["unserved"] == {"b-small": "model-prod/b-small: no replicas"}
