@@ -262,8 +262,9 @@ The publisher:
    one publish every 30 seconds.
 2. **Renders** every project's `data.json` with the shared library. Only the
    changed projects differ, and the output has a stable hash.
-3. **Replays** recent decision logs from Loki (the last 24 hours, at most
-   2,000 decisions: `REPLAY_SINCE`, `REPLAY_LIMIT`) against the new data bundle
+3. **Replays** recent decision logs from Loki (`REPLAY_SINCE`: 24 hours by
+   default, a week in the deployment, Loki's retention; at most `REPLAY_LIMIT`,
+   2,000, decisions, the most recent first) against the new data bundle
    and the active policy bundle (`registry/replay.py`; `scripts/policy-replay.py`
    does the same from a checkout):
    - decisions change only for the changed projects: continue;
