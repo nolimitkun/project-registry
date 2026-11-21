@@ -358,7 +358,8 @@ class PolicyWatch:
             # what auto picks for each project under the new policy and records (picks.py)
             try:
                 report["auto"] = picks.impact([old_policy, old_data], [new_policy, new_data],
-                                              records.get("model") or {}, self.opa, self.serving)
+                                              records.get("model") or {}, self.opa, self.serving,
+                                              records.get("model") or {})
             except RuntimeError as e:
                 report["auto"] = {"error": str(e)[-500:]}
             why = picks.refusal(report["auto"]) if "moves" in report["auto"] else None

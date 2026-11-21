@@ -272,9 +272,11 @@ The publisher:
      `failed`. This is the safety valve.
 4. **Works out what `auto` picks** for each project and task, before and
    after (`registry/picks.py`), which the replay can't show: it compares
-   allowed verdicts only. A pick moved onto a KServe model nobody serves (no
+   allowed verdicts only. A pick left on a KServe model nobody serves (no
    replicas, or gone) stops the change, as at its submit, where the moves
-   are filed as the approvers' evidence.
+   are filed as the approvers' evidence: one moved onto such a model, or one
+   on a model whose `deployment` the change repoints (a release promoted
+   under the catalog name moves no pick).
 5. **Builds, signs and uploads** the bundle under its revision, then moves
    `latest`.
 6. **Waits for OPA** to report the revision, then marks the change `active`.

@@ -971,13 +971,21 @@ def test_a_change_shows_and_guards_what_auto_picks(world):
 
     # kept out of auto: nothing moves, and it is filed with that as its evidence
     ch = reg.submit(ALICE, "model", "a-small", "create", api.ChangeIn(spec={**small, "auto": False}))
-    assert ch["replay_report"]["auto"] == {"moves": [], "unserved": {}, "unknown": [], "refusal": None}
+    assert ch["replay_report"]["auto"] == {"moves": [], "unserved": {}, "stranded": [], "unknown": [], "refusal": None}
     reg.decide(BOB, ch["id"], "approve", None)
     reg.decide(COST, ch["id"], "approve", None)
     assert pub.publish_once()
     with db.tx() as c:
         report = c.execute("select replay_report from change_request where id = %s", (ch["id"],)).fetchone()["replay_report"]
     assert report["auto"]["moves"] == []
+
+    # a release promoted onto the catalog name: no pick moves, but the deployment its calls
+    # now go to must serve (the onboarding pipeline's promote-catalog files exactly this)
+    reg.serving = lambda deployment: "no replicas" if deployment == "model-prod/zero" else None
+    with pytest.raises(HTTPException) as e:
+        reg.submit(ALICE, "model", "qwen3.6-27b", "update", api.ChangeIn(spec={"deployment": "model-prod/zero"}))
+    assert e.value.status_code == 422 and "auto would pick qwen3.6-27b for " in e.value.detail
+    assert "model-prod/zero: no replicas" in e.value.detail
 
     # served: the moves are the evidence, project by project and task by task
     reg.serving = lambda deployment: None
