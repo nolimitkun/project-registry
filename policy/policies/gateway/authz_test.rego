@@ -92,19 +92,36 @@ test_google_api_for_gcp_classes if {
 	not authz.allow with input as req("open-webui", "/google/tts", {})
 }
 
+# The gRPC services the tests name, on the catalog's own APIs: the live records may
+# not list any yet (the registry tests a policy commit against them).
+grpc_google_apis := {
+	"speech": {"placement": "gcp", "grpc_services": ["google.cloud.speech.v2.Speech"]},
+	"tts": {"placement": "gcp", "grpc_services": ["google.cloud.texttospeech.v1.TextToSpeech"]},
+}
+
+grpc_req(project, path) := req(project, path, {})
+
 test_google_api_by_grpc_service if {
-	authz.allow with input as req("open-webui", "/google.cloud.speech.v2.Speech/StreamingRecognize", {})
-	authz.allow with input as req("open-webui", "/google.cloud.texttospeech.v1.TextToSpeech/StreamingSynthesize", {})
-	not authz.allow with input as req("model-onboarding", "/google.cloud.speech.v2.Speech/StreamingRecognize", {})
-	not authz.allow with input as req("open-webui", "/google.cloud.aiplatform.v1.PredictionService/Predict", {})
-	not authz.allow with input as req("open-webui", "/google.cloud.speech.v2.Speech/", {})
-	not authz.allow with input as req("vault-app", "/google.cloud.speech.v2.Speech/StreamingRecognize", {})
+	authz.allow with input as grpc_req("open-webui", "/google.cloud.speech.v2.Speech/StreamingRecognize")
+		with data.registry.catalog.google_apis as grpc_google_apis
+	authz.allow with input as grpc_req("open-webui", "/google.cloud.texttospeech.v1.TextToSpeech/StreamingSynthesize")
+		with data.registry.catalog.google_apis as grpc_google_apis
+	not authz.allow with input as grpc_req("model-onboarding", "/google.cloud.speech.v2.Speech/StreamingRecognize")
+		with data.registry.catalog.google_apis as grpc_google_apis
+	not authz.allow with input as grpc_req("open-webui", "/google.cloud.aiplatform.v1.PredictionService/Predict")
+		with data.registry.catalog.google_apis as grpc_google_apis
+	not authz.allow with input as grpc_req("open-webui", "/google.cloud.speech.v2.Speech/")
+		with data.registry.catalog.google_apis as grpc_google_apis
+	not authz.allow with input as grpc_req("vault-app", "/google.cloud.speech.v2.Speech/StreamingRecognize")
 		with data.projects["vault-app"] as vault_app
+		with data.registry.catalog.google_apis as grpc_google_apis
 }
 
 test_grpc_refusals_say_why if {
-	authz.reason == "Google API speech is not allowed for project model-onboarding (its placement, gcp, is not one of the project's: onprem)" with input as req("model-onboarding", "/google.cloud.speech.v2.Speech/StreamingRecognize", {})
-	authz.reason == "gRPC service google.cloud.aiplatform.v1.PredictionService is not one a Google API in the catalog serves" with input as req("open-webui", "/google.cloud.aiplatform.v1.PredictionService/Predict", {})
+	authz.reason == "Google API speech is not allowed for project model-onboarding (its placement, gcp, is not one of the project's: onprem)" with input as grpc_req("model-onboarding", "/google.cloud.speech.v2.Speech/StreamingRecognize")
+		with data.registry.catalog.google_apis as grpc_google_apis
+	authz.reason == "gRPC service google.cloud.aiplatform.v1.PredictionService is not one a Google API in the catalog serves" with input as grpc_req("open-webui", "/google.cloud.aiplatform.v1.PredictionService/Predict")
+		with data.registry.catalog.google_apis as grpc_google_apis
 }
 
 test_google_api_refusals_say_why if {
