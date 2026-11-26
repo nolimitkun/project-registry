@@ -92,6 +92,21 @@ test_google_api_for_gcp_classes if {
 	not authz.allow with input as req("open-webui", "/google/tts", {})
 }
 
+test_google_api_by_grpc_service if {
+	authz.allow with input as req("open-webui", "/google.cloud.speech.v2.Speech/StreamingRecognize", {})
+	authz.allow with input as req("open-webui", "/google.cloud.texttospeech.v1.TextToSpeech/StreamingSynthesize", {})
+	not authz.allow with input as req("model-onboarding", "/google.cloud.speech.v2.Speech/StreamingRecognize", {})
+	not authz.allow with input as req("open-webui", "/google.cloud.aiplatform.v1.PredictionService/Predict", {})
+	not authz.allow with input as req("open-webui", "/google.cloud.speech.v2.Speech/", {})
+	not authz.allow with input as req("vault-app", "/google.cloud.speech.v2.Speech/StreamingRecognize", {})
+		with data.projects["vault-app"] as vault_app
+}
+
+test_grpc_refusals_say_why if {
+	authz.reason == "Google API speech is not allowed for project model-onboarding (its placement, gcp, is not one of the project's: onprem)" with input as req("model-onboarding", "/google.cloud.speech.v2.Speech/StreamingRecognize", {})
+	authz.reason == "gRPC service google.cloud.aiplatform.v1.PredictionService is not one a Google API in the catalog serves" with input as req("open-webui", "/google.cloud.aiplatform.v1.PredictionService/Predict", {})
+}
+
 test_google_api_refusals_say_why if {
 	authz.reason == "Google API tts is not allowed for project model-onboarding (its placement, gcp, is not one of the project's: onprem)" with input as req("model-onboarding", "/google/tts/v1/voices", {})
 	authz.reason == "Google API unknown is not in the catalog" with input as req("open-webui", "/google/unknown/v1/x", {})

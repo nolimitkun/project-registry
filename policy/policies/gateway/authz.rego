@@ -69,7 +69,8 @@ allow if {
 	"onprem" in lib.placements(project_id)
 }
 
-# Google's native APIs (speech, TTS, Vertex) under /google/<api>/.
+# Google's native APIs (speech, TTS, Vertex) under /google/<api>/, or by gRPC
+# (streaming speech and TTS): a call to a service one of them lists.
 allow if {
 	authenticated
 	google_api
@@ -84,6 +85,21 @@ google_api := parts[2] if {
 }
 
 google_path if startswith(path, "/google/")
+
+# A gRPC call's path is /<package>.<Service>/<Method>; the service names the API
+# (the catalog's grpc_services). The gateway routes only those on its gRPC
+# listener, and asks without the body (agentgateway-config policies.yaml).
+grpc_service := parts[1] if {
+	parts := split(path, "/")
+	count(parts) == 3
+	contains(parts[1], ".")
+	parts[2] != ""
+}
+
+google_api := name if {
+	some name, api in lib.catalog.google_apis
+	grpc_service in object.get(api, "grpc_services", [])
+}
 
 # MCP (the merged endpoint at /mcp). A project with mcp_tools may open
 # sessions, list tools and so on; each tools/call must name a catalog tool
@@ -220,6 +236,8 @@ reason := "unknown project" if {
 	google_api
 } else := "a Google API path is /google/<api>/<the API's own path>" if {
 	google_path
+} else := sprintf("gRPC service %v is not one a Google API in the catalog serves", [grpc_service]) if {
+	grpc_service
 } else := "denied"
 
 # The models a project sees in /v1/models: the ones it may name, plus the

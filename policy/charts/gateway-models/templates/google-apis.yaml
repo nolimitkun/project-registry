@@ -52,4 +52,35 @@ spec:
           kind: AgentgatewayBackend
           name: google-{{ $name }}
           weight: 1
+{{- with $api.grpcServices }}
+---
+# The API's gRPC services (streaming speech and TTS), on the gateway's gRPC
+# listener: a call's path is /<service>/<method>, which stays as it is.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: google-{{ $name }}-grpc
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ $v.gatewayName }}
+      sectionName: {{ $v.grpcListener }}
+  rules:
+    - matches:
+        {{- range . }}
+        - path:
+            type: PathPrefix
+            value: /{{ . }}/
+        {{- end }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: {{ $host }}
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: google-{{ $name }}
+          weight: 1
+{{- end }}
 {{- end }}

@@ -1,5 +1,8 @@
 # Set by the deployment repo (the gateway's settings), not here:
 gatewayName: agentgateway-proxy
+# The Gateway's listener for gRPC (its own, so no policy that reads request bodies
+# holds a stream; agentgateway-config gateway.yaml in the deployment repo).
+grpcListener: grpc
 gcp:
   project: ""
 kserve:
