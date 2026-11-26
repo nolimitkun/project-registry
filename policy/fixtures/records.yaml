@@ -113,13 +113,9 @@ google_api:
   speech:
     host: eu-speech.googleapis.com
     placement: gcp
-    grpcServices:
-    - google.cloud.speech.v2.Speech
   tts:
     host: eu-texttospeech.googleapis.com
     placement: gcp
-    grpcServices:
-    - google.cloud.texttospeech.v1.TextToSpeech
   vertex-eu:
     host: aiplatform.eu.rep.googleapis.com
     placement: gcp
