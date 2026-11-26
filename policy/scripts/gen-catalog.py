@@ -50,7 +50,11 @@ PROVIDERS = {
     # place of the catalog name. Both come from the pipeline's release record.
     "KServe": {"required": {"deployment", "servedModel"}, "optional": set()},
 }
-GOOGLE_API_FIELDS = {"required": {"placement", "host"}, "optional": {"http1Only"}}
+GOOGLE_API_FIELDS = {"required": {"placement", "host"}, "optional": {"http1Only", "grpcServices"}}
+# A gRPC service's full name, as the first segment of its calls' paths
+# (/google.cloud.speech.v2.Speech/StreamingRecognize): the gateway routes it to
+# the API and OPA decides it as the API.
+GRPC_SERVICE_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.[A-Z][A-Za-z0-9]*$")
 
 # Kubernetes object names are derived from these, so keep them DNS-safe once
 # dots are replaced (agentgateway-config templates/models.yaml).
@@ -135,6 +139,7 @@ def validate(catalog):
         if f"auto-{task}" in models:
             errors.append(f"{where}: its virtual model auto-{task} clashes with a catalog model")
 
+    grpc_owner = {}
     for name, api in (catalog.get("googleApis") or {}).items():
         where = f"googleApis.{name}"
         if not NAME_RE.match(name) or "." in name:
@@ -150,6 +155,21 @@ def validate(catalog):
             errors.append(f"{where}.placement: must be one of {sorted(PLACEMENTS)}")
         if "http1Only" in api and not isinstance(api["http1Only"], bool):
             errors.append(f"{where}.http1Only: must be true or false")
+        services = api.get("grpcServices")
+        if services is None:
+            continue
+        if not isinstance(services, list) or not services or len(set(map(str, services))) != len(services):
+            errors.append(f"{where}.grpcServices: must be a non-empty list of distinct gRPC service names")
+            continue
+        if api.get("http1Only"):
+            errors.append(f"{where}.grpcServices: gRPC needs HTTP/2, so not with http1Only")
+        for svc in services:
+            if not isinstance(svc, str) or not GRPC_SERVICE_RE.match(svc):
+                errors.append(f"{where}.grpcServices: {svc!r} is not a gRPC service name (package.Service)")
+            elif svc in grpc_owner:
+                errors.append(f"{where}.grpcServices: {svc} is googleApis.{grpc_owner[svc]}'s already")
+            else:
+                grpc_owner[svc] = name
     return errors
 
 
@@ -189,7 +209,8 @@ def render(catalog, tool_risks):
             for name, m in models.items()
         ],
         "googleApis": {
-            name: {"host": a["host"], "http1Only": a.get("http1Only", False)}
+            name: {"host": a["host"], "http1Only": a.get("http1Only", False),
+                   **({"grpcServices": a["grpcServices"]} if a.get("grpcServices") else {})}
             for name, a in apis.items()
         },
         "tasks": sorted(catalog.get("tasks") or {}),
@@ -204,7 +225,9 @@ def render(catalog, tool_risks):
                    **({"auto": False} if m.get("auto") is False else {})}
             for name, m in models.items()
         },
-        "google_apis": {name: {"placement": a["placement"]} for name, a in apis.items()},
+        "google_apis": {name: {"placement": a["placement"],
+                               **({"grpc_services": a["grpcServices"]} if a.get("grpcServices") else {})}
+                        for name, a in apis.items()},
         "tasks": catalog.get("tasks") or {},
         "tools": tool_risks,
         "serving_namespaces": catalog.get("servingNamespaces") or [],
